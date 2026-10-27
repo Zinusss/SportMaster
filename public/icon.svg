@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#18181b"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </linearGradient>
+    <linearGradient id="ringGreen" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#30D158"/>
+      <stop offset="100%" stop-color="#00BA34"/>
+    </linearGradient>
+    <linearGradient id="ringOrange" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF9F0A"/>
+      <stop offset="100%" stop-color="#FF375F"/>
+    </linearGradient>
+    <linearGradient id="ringBlue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0A84FF"/>
+      <stop offset="100%" stop-color="#5E5CE6"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#bg)"/>
+  
+  <!-- Outer Energy Circle -->
+  <circle cx="256" cy="256" r="180" fill="none" stroke="url(#ringOrange)" stroke-width="24" stroke-linecap="round" stroke-dasharray="800 300" transform="rotate(-90 256 256)"/>
+  <!-- Middle Nutrient Circle -->
+  <circle cx="256" cy="256" r="140" fill="none" stroke="url(#ringGreen)" stroke-width="24" stroke-linecap="round" stroke-dasharray="600 250" transform="rotate(45 256 256)"/>
+  <!-- Inner Activity Circle -->
+  <circle cx="256" cy="256" r="100" fill="none" stroke="url(#ringBlue)" stroke-width="24" stroke-linecap="round" stroke-dasharray="450 180" transform="rotate(180 256 256)"/>
+
+  <!-- Centered Spark / AI Fire icon -->
+  <path d="M256 160 C256 160 216 220 216 264 C216 295 234 316 256 316 C278 316 296 295 296 264 C296 220 256 160 256 160 Z" fill="#FF9F0A" />
+  <path d="M256 210 C256 210 236 248 236 270 C236 286 245 296 256 296 C267 296 276 286 276 270 C276 248 256 210 256 210 Z" fill="#FFD60A" />
+</svg>
