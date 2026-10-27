@@ -1,111 +1,115 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Sparkles, Loader2, Mail, ArrowRight, CheckCircle2, 
-  AlertCircle, KeyRound, RefreshCw, ShieldCheck
+  AlertCircle, KeyRound, RefreshCw, ShieldCheck, ExternalLink, Settings
 } from 'lucide-react';
 import { AuthUser } from '../types/auth';
 import { 
   loginWithGoogleData, 
-  parseJwtPayload, 
-  signInViaGoogleOAuthServer, 
+  getGoogleClientId,
+  saveGoogleClientId,
+  getGoogleOAuthRedirectUrl,
   sendEmailVerificationCode, 
-  verifyEmailCode,
-  getGoogleClientId
+  verifyEmailCode 
 } from '../services/auth';
-import { getFirebaseServices, loginWithFirebaseGoogle } from '../services/firebase';
 
 interface AuthViewProps {
   onSuccess: (user: AuthUser) => void;
 }
 
 export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
-  // Step: 'email_input' | 'otp_verify'
+  // Mode: 'email_input' | 'otp_verify'
   const [authStep, setAuthStep] = useState<'email_input' | 'otp_verify'>('email_input');
   
   // Fields
   const [email, setEmail] = useState('');
   const [otpCode, setOtpCode] = useState('');
-  const [sentCodeDisplay, setSentCodeDisplay] = useState<string | null>(null);
+  
+  // Google Client ID Config Modal
+  const [showGoogleModal, setShowGoogleModal] = useState(false);
+  const [googleClientIdInput, setGoogleClientIdInput] = useState(getGoogleClientId());
 
   // Status
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  const googleBtnContainerRef = useRef<HTMLDivElement>(null);
-
-  // Initialize official Google Identity Services button if available
+  // Catch Google OAuth Callback from URL Hash (#access_token=...)
   useEffect(() => {
-    const google = (window as any).google;
-    const clientId = getGoogleClientId();
+    const hash = window.location.hash;
+    if (hash && hash.includes('access_token=')) {
+      const hashParams = new URLSearchParams(hash.substring(1));
+      const accessToken = hashParams.get('access_token');
 
-    if (google?.accounts?.id && clientId && googleBtnContainerRef.current) {
-      try {
-        google.accounts.id.initialize({
-          client_id: clientId,
-          callback: async (response: any) => {
-            if (response?.credential) {
-              const payload = parseJwtPayload(response.credential);
-              if (payload) {
-                const user = await loginWithGoogleData({
-                  email: payload.email,
-                  name: payload.name,
-                  avatar: payload.picture,
-                  sub: payload.sub
-                });
-                onSuccess(user);
-              }
-            }
-          }
-        });
+      if (accessToken) {
+        setIsLoading(true);
+        setSuccessMessage('Отримано відповідь від Google серверів. Завантаження профілю...');
 
-        googleBtnContainerRef.current.innerHTML = '';
-        google.accounts.id.renderButton(googleBtnContainerRef.current, {
-          theme: 'filled_black',
-          size: 'large',
-          text: 'continue_with',
-          shape: 'pill',
-          width: '100%'
-        });
-      } catch (e) {
-        console.warn('Google Identity button render error', e);
+        // Fetch verified userinfo from Google's servers
+        fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        })
+          .then((res) => {
+            if (!res.ok) throw new Error('Помилка Google сервера: ' + res.status);
+            return res.json();
+          })
+          .then(async (userInfo) => {
+            if (!userInfo.email) throw new Error('Email не надано Google сервером');
+
+            const user = await loginWithGoogleData({
+              email: userInfo.email,
+              name: userInfo.name,
+              avatar: userInfo.picture,
+              sub: userInfo.sub
+            });
+
+            // Clean hash from URL bar
+            window.history.replaceState(null, '', window.location.pathname + window.location.search);
+            setSuccessMessage(`Успішний вхід: ${userInfo.email}!`);
+            setTimeout(() => onSuccess(user), 300);
+          })
+          .catch((err: any) => {
+            console.error('Google callback error', err);
+            setErrorMessage('Помилка авторизації через Google: ' + err.message);
+          })
+          .finally(() => {
+            setIsLoading(false);
+          });
       }
     }
   }, [onSuccess]);
 
-  // 1. Google One-Click Server Authentication (like GitHub / Notion)
-  const handleGoogleSignIn = async () => {
+  // 1. Click "Увійти через Google" -> Redirect to accounts.google.com/v3/signin/accountchooser
+  const handleGoogleSignInClick = () => {
     setErrorMessage(null);
-    setSuccessMessage(null);
-    setIsLoading(true);
+    const clientId = getGoogleClientId();
 
-    try {
-      const { isReady } = getFirebaseServices();
-      if (isReady) {
-        const fbUser = await loginWithFirebaseGoogle();
-        const user = await loginWithGoogleData({
-          email: fbUser.email,
-          name: fbUser.name,
-          avatar: fbUser.avatar,
-          sub: fbUser.uid
-        });
-        setSuccessMessage('Успішний вхід через Google!');
-        setTimeout(() => onSuccess(user), 300);
-        return;
-      }
-
-      // Direct Google OAuth2 Token Client via GIS
-      const user = await signInViaGoogleOAuthServer();
-      setSuccessMessage('Успішний вхід через Google!');
-      setTimeout(() => onSuccess(user), 300);
-    } catch (err: any) {
-      setErrorMessage(err.message || 'Не вдалося увійти через Google');
-    } finally {
-      setIsLoading(false);
+    if (!clientId) {
+      // Need user's Google Client ID to open the official accountchooser
+      setShowGoogleModal(true);
+      return;
     }
+
+    // Redirect directly to Google OAuth Account Chooser
+    const redirectUrl = getGoogleOAuthRedirectUrl(clientId);
+    window.location.href = redirectUrl;
   };
 
-  // 2. Email Step 1: Send 6-digit confirmation code
+  const handleSaveAndRedirectGoogle = () => {
+    if (!googleClientIdInput.trim()) {
+      setErrorMessage('Введіть ваш Google Client ID');
+      return;
+    }
+
+    saveGoogleClientId(googleClientIdInput.trim());
+    setShowGoogleModal(false);
+
+    // Redirect to Google's official account chooser immediately
+    const redirectUrl = getGoogleOAuthRedirectUrl(googleClientIdInput.trim());
+    window.location.href = redirectUrl;
+  };
+
+  // 2. Email: Send code to actual email (NEVER show on screen!)
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -113,16 +117,15 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
 
     const cleanEmail = email.trim();
     if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setErrorMessage('Введіть дійсну пошту (наприклад: name@gmail.com)');
+      setErrorMessage('Введіть дійсний email (наприклад: name@gmail.com)');
       return;
     }
 
     setIsLoading(true);
     try {
-      const { code } = await sendEmailVerificationCode(cleanEmail);
-      setSentCodeDisplay(code);
+      await sendEmailVerificationCode(cleanEmail);
       setAuthStep('otp_verify');
-      setSuccessMessage('Код підтвердження успішно згенеровано!');
+      setSuccessMessage(`Лист з 6-значним кодом надіслано на ${cleanEmail}!`);
     } catch (err: any) {
       setErrorMessage(err.message || 'Помилка надсилання коду');
     } finally {
@@ -130,24 +133,24 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     }
   };
 
-  // 3. Email Step 2: Verify confirmation code
+  // 3. Email: Verify code from user's inbox
   const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setSuccessMessage(null);
 
     if (!otpCode.trim() || otpCode.trim().length !== 6) {
-      setErrorMessage('Код має містити рівно 6 цифр');
+      setErrorMessage('Введіть 6 цифр коду з листа');
       return;
     }
 
     setIsLoading(true);
     try {
       const user = await verifyEmailCode(email, otpCode.trim());
-      setSuccessMessage('Пошту підтверджено! Вхід виконано.');
-      setTimeout(() => onSuccess(user), 400);
+      setSuccessMessage('Код підтверджено! Вхід виконано.');
+      setTimeout(() => onSuccess(user), 300);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Помилка верифікації коду');
+      setErrorMessage(err.message || 'Невірний код або термін дії вичерпано');
     } finally {
       setIsLoading(false);
     }
@@ -156,12 +159,12 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
   return (
     <div className="min-h-screen bg-black text-white flex flex-col justify-center items-center px-4 py-8 relative overflow-hidden select-none">
       
-      {/* Background Apple Glows */}
+      {/* Background ambient lighting */}
       <div className="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-gradient-to-tr from-purple-600/20 via-apple-orange/15 to-apple-green/10 rounded-full blur-3xl pointer-events-none" />
 
       <div className="w-full max-w-md relative z-10 space-y-6">
         
-        {/* Top Header / Branding */}
+        {/* Brand Logo & Title */}
         <div className="text-center space-y-2">
           <div className="w-16 h-16 rounded-3xl bg-gradient-to-tr from-apple-orange via-apple-pink to-purple-600 p-0.5 mx-auto shadow-2xl shadow-apple-orange/20">
             <div className="w-full h-full bg-black rounded-[22px] flex items-center justify-center">
@@ -172,16 +175,16 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             SportMaster AI
           </h1>
           <p className="text-xs text-apple-subtext max-w-xs mx-auto leading-relaxed">
-            Розумний AI-трекер харчування, розрахунку КБЖВ та персональний коуч на базі Google Gemini
+            Персональний AI-трекер харчування, КБЖВ та коуч на базі Google Gemini
           </p>
         </div>
 
-        {/* Main Card (GitHub / Modern SaaS style) */}
+        {/* Auth Card */}
         <div className="ios-glass-card rounded-3xl p-6 border border-white/10 shadow-2xl space-y-5">
           
           <div className="text-center pb-1">
             <h2 className="text-base font-bold text-white">Вхід до акаунту</h2>
-            <p className="text-[11px] text-white/50">Оберіть зручний спосіб входу</p>
+            <p className="text-[11px] text-white/50">Авторизація через сервери Google або пошту</p>
           </div>
 
           {/* Error Message */}
@@ -200,13 +203,10 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             </div>
           )}
 
-          {/* GIS Native Button Container */}
-          <div ref={googleBtnContainerRef} className="w-full flex justify-center" />
-
-          {/* Big Official Google Sign-In Button (Like on GitHub / Linear) */}
+          {/* 1. Official Google Button (Opens https://accounts.google.com/v3/signin/accountchooser) */}
           <button
             type="button"
-            onClick={handleGoogleSignIn}
+            onClick={handleGoogleSignInClick}
             disabled={isLoading}
             className="w-full py-3.5 px-4 rounded-2xl bg-white hover:bg-neutral-100 text-black font-bold text-xs sm:text-sm flex items-center justify-center gap-3 transition shadow-xl active:scale-[0.99] disabled:opacity-50"
           >
@@ -220,7 +220,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                 <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
               </svg>
             )}
-            <span>Продовжити через Google</span>
+            <span>Увійти через Google (accounts.google.com)</span>
           </button>
 
           {/* Divider */}
@@ -232,7 +232,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             <div className="flex-1 h-px bg-white/10" />
           </div>
 
-          {/* STEP 1: Enter Email */}
+          {/* 2. Email Flow - STEP 1: Enter email */}
           {authStep === 'email_input' && (
             <form onSubmit={handleSendCode} className="space-y-3.5">
               <div>
@@ -263,7 +263,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                   <Loader2 size={18} className="animate-spin text-black" />
                 ) : (
                   <>
-                    <span>Отримати код підтвердження</span>
+                    <span>Надіслати код на мою пошту</span>
                     <ArrowRight size={16} />
                   </>
                 )}
@@ -271,32 +271,23 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             </form>
           )}
 
-          {/* STEP 2: Enter 6-digit Code */}
+          {/* 2. Email Flow - STEP 2: Enter 6-digit code received in email (NEVER shown on screen!) */}
           {authStep === 'otp_verify' && (
             <form onSubmit={handleVerifyCode} className="space-y-4">
               
-              {/* Sent Code Notice */}
               <div className="p-3.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-200 space-y-1">
                 <div className="flex items-center gap-1.5 font-semibold text-cyan-400">
                   <ShieldCheck size={16} />
-                  <span>Код підтвердження надіслано</span>
+                  <span>Лист надіслано на вашу пошту</span>
                 </div>
-                <p className="text-[11px] text-white/70">
-                  Ми надіслали 6-значний одноразовий код на <strong>{email}</strong>
+                <p className="text-[11px] text-white/70 leading-relaxed">
+                  Будь ласка, перевірте вхідні або папку «Спам» на пошті <strong>{email}</strong> та введіть отриманий 6-значний код:
                 </p>
-                {sentCodeDisplay && (
-                  <div className="pt-1.5 flex items-center justify-between border-t border-cyan-500/10">
-                    <span className="text-[10px] text-white/50">Ваш код безпеки:</span>
-                    <span className="text-sm font-mono font-bold tracking-widest text-cyan-300 bg-cyan-500/20 px-2.5 py-0.5 rounded-lg">
-                      {sentCodeDisplay}
-                    </span>
-                  </div>
-                )}
               </div>
 
               <div>
                 <label className="text-xs text-white/80 block mb-1.5 font-medium">
-                  Введіть 6-значний код:
+                  Введіть 6-значний код з листа:
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-white/40">
@@ -309,7 +300,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                     autoFocus
                     value={otpCode}
                     onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="123456"
+                    placeholder="______"
                     className="w-full bg-black/50 border border-white/15 rounded-2xl pl-10 pr-4 py-3 text-center tracking-[0.4em] text-lg font-mono font-bold text-white placeholder-white/20 focus:outline-none focus:border-apple-green transition"
                   />
                 </div>
@@ -348,7 +339,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                   className="hover:text-cyan-400 transition flex items-center gap-1"
                 >
                   <RefreshCw size={12} />
-                  <span>Надіслати повторно</span>
+                  <span>Надіслати код ще раз</span>
                 </button>
               </div>
 
@@ -357,13 +348,89 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
 
         </div>
 
-        {/* Security badge */}
-        <div className="flex items-center justify-center gap-2 text-[11px] text-white/40">
-          <ShieldCheck size={14} className="text-apple-green" />
-          <span>Ваші дані та раціон надійно захищені та прив'язані до вашого акаунта</span>
+        {/* Settings button for Google Client ID */}
+        <div className="text-center">
+          <button
+            type="button"
+            onClick={() => setShowGoogleModal(true)}
+            className="text-[11px] text-white/40 hover:text-white/70 flex items-center justify-center gap-1.5 mx-auto transition"
+          >
+            <Settings size={12} />
+            <span>Налаштувати Google OAuth Client ID</span>
+          </button>
         </div>
 
       </div>
+
+      {/* Google OAuth Modal for entering Client ID */}
+      {showGoogleModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+          <div className="w-full max-w-sm bg-[#1C1C1E] border border-white/10 rounded-3xl p-5 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <span>Google OAuth 2.0 Налаштування</span>
+              </h3>
+              <button
+                onClick={() => setShowGoogleModal(false)}
+                className="text-xs text-white/50 hover:text-white"
+              >
+                Закрити
+              </button>
+            </div>
+
+            <p className="text-xs text-white/70 leading-relaxed">
+              Щоб Google відкривав сторінку вибору акаунта <strong>https://accounts.google.com/v3/signin/accountchooser</strong>, вставте ваш <strong>Google Client ID</strong> з безкоштовної панелі Google Cloud:
+            </p>
+
+            <div>
+              <label className="text-[11px] text-white/60 block mb-1">
+                Google Web Client ID:
+              </label>
+              <input
+                type="text"
+                value={googleClientIdInput}
+                onChange={(e) => setGoogleClientIdInput(e.target.value)}
+                placeholder="123456789-xxx.apps.googleusercontent.com"
+                className="w-full bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono placeholder-white/20 focus:outline-none focus:border-apple-green"
+              />
+            </div>
+
+            <a
+              href="https://console.cloud.google.com/apis/credentials"
+              target="_blank"
+              rel="noreferrer"
+              className="text-[11px] text-purple-400 hover:text-purple-300 underline flex items-center gap-1"
+            >
+              <span>Створити Client ID в Google Cloud Console (безкоштовно)</span>
+              <ExternalLink size={11} />
+            </a>
+
+            <div className="text-[10px] text-white/40 leading-relaxed bg-black/30 p-2.5 rounded-xl border border-white/5">
+              У налаштуваннях Google Client ID вкажіть:<br />
+              <strong>Authorized JavaScript origins:</strong> {window.location.origin}<br />
+              <strong>Authorized redirect URIs:</strong> {window.location.origin + window.location.pathname}
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowGoogleModal(false)}
+                className="flex-1 py-2.5 rounded-xl bg-white/10 text-white text-xs font-semibold hover:bg-white/15 transition"
+              >
+                Скасувати
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveAndRedirectGoogle}
+                className="flex-1 py-2.5 rounded-xl bg-apple-green text-black text-xs font-bold hover:bg-apple-green/90 transition shadow-md shadow-apple-green/20"
+              >
+                Зберегти та відкрити Google
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 };
