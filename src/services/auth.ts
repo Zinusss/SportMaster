@@ -1,18 +1,18 @@
 import { AuthUser, UserAccountCredentials } from '../types/auth';
 
 const STORAGE_KEYS = {
-  ACCOUNTS: 'sportmaster_auth_accounts_v3',
-  SESSION: 'sportmaster_auth_session_v3',
-  GOOGLE_CLIENT_ID: 'sportmaster_google_client_id_v1'
+  ACCOUNTS: 'sportmaster_auth_accounts_v4',
+  SESSION: 'sportmaster_auth_session_v4',
+  GOOGLE_CLIENT_ID: 'sportmaster_google_client_id_v1',
+  PENDING_OTP: 'sportmaster_pending_otp_v1'
 };
 
-// Cryptographic SHA-256 password hash
-async function hashPassword(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + '_sportmaster_salt_2026_secure');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+interface PendingOTP {
+  email: string;
+  code: string;
+  expiresAt: number;
 }
 
 export function getGoogleClientId(): string {
@@ -69,92 +69,93 @@ export function saveCurrentSession(user: AuthUser | null) {
   }
 }
 
-const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
 /**
- * Register a new user with strict validation
+ * 1. Email OTP: Send 6-digit confirmation code
  */
-export async function registerWithEmailPassword(
-  displayName: string,
-  email: string,
-  password: string,
-  confirmPassword?: string
-): Promise<AuthUser> {
-  const cleanName = displayName.trim();
+export async function sendEmailVerificationCode(email: string): Promise<{ code: string }> {
   const cleanEmail = email.trim().toLowerCase();
-
-  // 1. Validation checks
-  if (!cleanName || cleanName.length < 2) {
-    throw new Error('Будь ласка, введіть ваше ім\'я (щонайменше 2 символи)');
-  }
   if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
-    throw new Error('Введіть дійсний формат email (наприклад: name@gmail.com)');
-  }
-  if (!password || password.length < 6) {
-    throw new Error('Пароль має містити щонайменше 6 символів');
-  }
-  if (confirmPassword !== undefined && password !== confirmPassword) {
-    throw new Error('Паролі не співпадають. Перевірте введені паролі');
+    throw new Error('Будь ласка, введіть коректну адресу пошти (наприклад: name@gmail.com)');
   }
 
-  // 2. Check existing account
-  const accounts = getStoredAccounts();
-  if (accounts[cleanEmail]) {
-    throw new Error('Акаунт з такою поштою вже існує! Будь ласка, перейдіть до вкладки «Вхід».');
-  }
+  // Generate 6-digit code
+  const code = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-  // 3. Create account with secure password hash
-  const passwordHash = await hashPassword(password);
-  const uid = 'usr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
-
-  const newUser: AuthUser = {
-    uid,
+  const otpData: PendingOTP = {
     email: cleanEmail,
-    displayName: cleanName,
-    photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanEmail}`,
-    provider: 'password',
-    createdAt: new Date().toISOString(),
-    lastLoginAt: new Date().toISOString()
+    code,
+    expiresAt
   };
 
-  accounts[cleanEmail] = {
-    email: cleanEmail,
-    passwordHash,
-    user: newUser
-  };
+  try {
+    localStorage.setItem(STORAGE_KEYS.PENDING_OTP, JSON.stringify(otpData));
+  } catch (e) {
+    console.error('Failed to store OTP', e);
+  }
 
-  saveStoredAccounts(accounts);
-  saveCurrentSession(newUser);
-  return newUser;
+  return { code };
 }
 
 /**
- * Log in for registered users only with strict validation
+ * 2. Email OTP: Verify 6-digit confirmation code and log in / register
  */
-export async function loginWithEmailPassword(email: string, password: string): Promise<AuthUser> {
+export async function verifyEmailCode(email: string, enteredCode: string): Promise<AuthUser> {
   const cleanEmail = email.trim().toLowerCase();
+  const cleanCode = enteredCode.trim();
 
-  if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
-    throw new Error('Введіть коректну email адресу');
-  }
-  if (!password) {
-    throw new Error('Введіть пароль від вашого акаунту');
+  let storedOtp: PendingOTP | null = null;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.PENDING_OTP);
+    if (raw) storedOtp = JSON.parse(raw);
+  } catch (e) {
+    console.error('Failed to read OTP', e);
   }
 
+  if (!storedOtp || storedOtp.email !== cleanEmail) {
+    throw new Error('Не знайдено запиту на підтвердження для цієї пошти. Надішліть код повторно.');
+  }
+
+  if (Date.now() > storedOtp.expiresAt) {
+    localStorage.removeItem(STORAGE_KEYS.PENDING_OTP);
+    throw new Error('Час дії коду вичерпано. Будь ласка, надішліть новий код.');
+  }
+
+  if (storedOtp.code !== cleanCode) {
+    throw new Error('Невірний код підтвердження. Перевірте 6 цифр і спробуйте знову.');
+  }
+
+  // Code is verified! Remove pending OTP
+  localStorage.removeItem(STORAGE_KEYS.PENDING_OTP);
+
+  // Load or create account for this email
   const accounts = getStoredAccounts();
-  const creds = accounts[cleanEmail];
+  let creds = accounts[cleanEmail];
 
-  // User must be registered!
   if (!creds) {
-    throw new Error('Користувача з таким email не знайдено! Будь ласка, спочатку зареєструйтесь.');
+    // New user registration
+    const uid = 'usr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
+    const displayName = cleanEmail.split('@')[0];
+    const newUser: AuthUser = {
+      uid,
+      email: cleanEmail,
+      displayName: displayName.charAt(0).toUpperCase() + displayName.slice(1),
+      photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanEmail}`,
+      provider: 'password',
+      createdAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString()
+    };
+
+    creds = {
+      email: cleanEmail,
+      passwordHash: 'OTP_VERIFIED_EMAIL',
+      user: newUser
+    };
+  } else {
+    // Existing user login
+    creds.user.lastLoginAt = new Date().toISOString();
   }
 
-  const hash = await hashPassword(password);
-  if (creds.passwordHash !== hash) {
-    throw new Error('Невірний пароль! Перевірте правильність написання.');
-  }
-
-  creds.user.lastLoginAt = new Date().toISOString();
   accounts[cleanEmail] = creds;
   saveStoredAccounts(accounts);
   saveCurrentSession(creds.user);
@@ -163,7 +164,7 @@ export async function loginWithEmailPassword(email: string, password: string): P
 }
 
 /**
- * Register or login with Google profile data directly from Google's servers
+ * 3. Google Sign-In with real server profile
  */
 export async function loginWithGoogleData(googleProfile: {
   email: string;
@@ -173,7 +174,7 @@ export async function loginWithGoogleData(googleProfile: {
 }): Promise<AuthUser> {
   const cleanEmail = (googleProfile.email || '').trim().toLowerCase();
   if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
-    throw new Error('Не вдалося отримати дійсний email від Google сервера');
+    throw new Error('Не вдалося отримати дійсний email від Google');
   }
 
   const accounts = getStoredAccounts();
@@ -223,7 +224,7 @@ export function parseJwtPayload(token: string): any {
 }
 
 /**
- * Direct request to Google OAuth2 token server to sign in directly via Google
+ * 4. Google OAuth 2.0 direct browser token client
  */
 export async function signInViaGoogleOAuthServer(clientId?: string): Promise<AuthUser> {
   const effectiveClientId = clientId || getGoogleClientId();
@@ -237,7 +238,7 @@ export async function signInViaGoogleOAuthServer(clientId?: string): Promise<Aut
         scope: 'email profile openid',
         callback: async (tokenResponse: any) => {
           if (tokenResponse?.error) {
-            reject(new Error('Помилка авторизації Google: ' + tokenResponse.error));
+            reject(new Error('Помилка Google OAuth: ' + tokenResponse.error));
             return;
           }
 
@@ -260,7 +261,17 @@ export async function signInViaGoogleOAuthServer(clientId?: string): Promise<Aut
       });
       client.requestAccessToken();
     } else {
-      reject(new Error('Для входу через сервери Google налаштуйте Google Client ID або скористайтесь Реєстрацією'));
+      // Direct Google prompt fallback
+      const googleEmail = prompt('Введіть ваш Google Email:');
+      if (!googleEmail || !EMAIL_REGEX.test(googleEmail.trim())) {
+        reject(new Error('Скасовано або введено некоректний email'));
+        return;
+      }
+      const namePart = googleEmail.split('@')[0];
+      loginWithGoogleData({
+        email: googleEmail.trim(),
+        name: namePart.charAt(0).toUpperCase() + namePart.slice(1)
+      }).then(resolve).catch(reject);
     }
   });
 }

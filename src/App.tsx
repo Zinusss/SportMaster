@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useAppData } from './hooks/useAppData';
 import { Dashboard } from './components/Dashboard';
 import { AIChatView } from './components/AIChatView';
@@ -7,14 +7,13 @@ import { ProfileView } from './components/ProfileView';
 import { Navigation, NavTab } from './components/Navigation';
 import { AddMealModal } from './components/AddMealModal';
 import { OnboardingModal } from './components/OnboardingModal';
-import { AuthModal } from './components/AuthModal';
+import { AuthView } from './components/AuthView';
 import { MealType } from './types';
 import { AuthUser } from './types/auth';
 import { getCurrentSession, logoutUser } from './services/auth';
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(() => getCurrentSession());
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => !getCurrentSession());
 
   const {
     profile,
@@ -41,22 +40,13 @@ export const App: React.FC = () => {
   const [isAddMealOpen, setIsAddMealOpen] = useState(false);
   const [selectedMealType, setSelectedMealType] = useState<MealType>('breakfast');
 
-  // If user signs out, prompt auth
-  useEffect(() => {
-    if (!currentUser) {
-      setIsAuthModalOpen(true);
-    }
-  }, [currentUser]);
-
   const handleAuthSuccess = (user: AuthUser) => {
     setCurrentUser(user);
-    setIsAuthModalOpen(false);
   };
 
   const handleLogout = () => {
     logoutUser();
     setCurrentUser(null);
-    setIsAuthModalOpen(true);
   };
 
   const handleOpenAddMeal = (mealType: MealType) => {
@@ -67,6 +57,11 @@ export const App: React.FC = () => {
   const handleUpdateWeight = (newWeight: number) => {
     updateProfile({ weight: newWeight });
   };
+
+  // If not logged in, render the full-screen premium Auth Page (like GitHub / Linear)
+  if (!currentUser) {
+    return <AuthView onSuccess={handleAuthSuccess} />;
+  }
 
   return (
     <div className="min-h-screen bg-black text-white flex flex-col justify-between selection:bg-apple-green selection:text-black">
@@ -110,7 +105,7 @@ export const App: React.FC = () => {
           <ProfileView
             currentUser={currentUser}
             onLogout={handleLogout}
-            onOpenAuth={() => setIsAuthModalOpen(true)}
+            onOpenAuth={() => setCurrentUser(null)}
             profile={profile}
             days={days}
             chatHistory={chatHistory}
@@ -143,17 +138,9 @@ export const App: React.FC = () => {
         }}
       />
 
-      {/* Full Authentication Modal (Login / Register / Google Auth) */}
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onSuccess={handleAuthSuccess}
-        onClose={() => setIsAuthModalOpen(false)}
-        canDismiss={!!currentUser}
-      />
-
       {/* Onboarding Wizard (runs on first launch of this account if profile metrics not yet set) */}
       <OnboardingModal
-        isOpen={!!currentUser && !profile.isOnboarded}
+        isOpen={!profile.isOnboarded}
         currentUser={currentUser}
         onComplete={(onboardedData) => updateProfile(onboardedData)}
       />
