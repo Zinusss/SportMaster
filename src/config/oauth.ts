@@ -25,7 +25,7 @@ export const OAUTH_CONFIG = {
    */
   getClientId(): string {
     // 1. Зі змінних оточення Vite / GitHub Secrets під час збірки
-    const envClientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID;
+    const envClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     if (envClientId && typeof envClientId === 'string' && envClientId.trim()) {
       return envClientId.trim();
     }
