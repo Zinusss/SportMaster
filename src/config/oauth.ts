@@ -19,9 +19,9 @@ export const OAUTH_CONFIG = {
 
   /**
    * Отримати Google Client ID:
-   * 1. З окремого файлу src/config/secrets.ts
-   * 2. Зі змінних оточення Vite (VITE_GOOGLE_CLIENT_ID)
-   * 3. З localStorage браузера
+   * 1. Зі змінних оточення Vite / GitHub Secrets (VITE_GOOGLE_CLIENT_ID)
+   * 2. З окремого локального конфіг-файлу secrets.ts (у .gitignore)
+   * 3. З пам'яті браузера (localStorage)
    */
   getClientId(): string {
     // 1. Зі змінних оточення Vite / GitHub Secrets під час збірки
@@ -30,17 +30,18 @@ export const OAUTH_CONFIG = {
       return envClientId.trim();
     }
 
-    // 2. З окремого локального конфіг-файлу secrets.ts
+    // 2. З ізольованого локального конфіг-файлу secrets.ts
     if (SECRETS.googleClientId && SECRETS.googleClientId.trim()) {
       return SECRETS.googleClientId.trim();
     }
 
     // 3. З пам'яті браузера
     try {
-      return localStorage.getItem(STORAGE_KEYS.CLIENT_ID) || '';
-    } catch (e) {
-      return '';
-    }
+      const stored = localStorage.getItem(STORAGE_KEYS.CLIENT_ID);
+      if (stored && stored.trim()) return stored.trim();
+    } catch (e) {}
+
+    return '';
   },
 
   /**
@@ -55,11 +56,15 @@ export const OAUTH_CONFIG = {
   },
 
   /**
-   * Поточний Redirect URI для GitHub Pages або localhost
+   * Поточний Redirect URI для GitHub Pages або localhost (з нормалізацією слеша)
    */
   getRedirectUri(): string {
     if (typeof window === 'undefined') return '';
-    return window.location.origin + window.location.pathname;
+    let path = window.location.pathname;
+    if (!path.endsWith('/')) {
+      path += '/';
+    }
+    return window.location.origin + path;
   },
 
   /**

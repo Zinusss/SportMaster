@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  Sparkles, Loader2, Mail, ArrowRight, CheckCircle2, 
-  AlertCircle, KeyRound, RefreshCw, ShieldCheck
+  Sparkles, Loader2, Mail, Lock, Eye, EyeOff, 
+  ArrowRight, CheckCircle2, AlertCircle, Compass
 } from 'lucide-react';
 import { AuthUser } from '../types/auth';
 import { 
   loginWithGoogleData, 
   getGoogleClientId,
   getGoogleOAuthRedirectUrl,
-  sendEmailVerificationCode, 
-  verifyEmailCode 
+  loginOrRegisterWithEmail,
+  loginAsGuest
 } from '../services/auth';
 
 interface AuthViewProps {
@@ -17,35 +17,55 @@ interface AuthViewProps {
 }
 
 export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
-  // Mode: 'email_input' | 'otp_verify'
-  const [authStep, setAuthStep] = useState<'email_input' | 'otp_verify'>('email_input');
-  
-  // Fields
+  // Fields for Email login
   const [email, setEmail] = useState('');
-  const [otpCode, setOtpCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   // Status
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
-  // Catch Google OAuth Callback from URL Hash (#access_token=...)
+  // Catch Google OAuth Callback from URL Hash (#access_token=... or #error=...)
   useEffect(() => {
     const hash = window.location.hash;
-    if (hash && hash.includes('access_token=')) {
+    if (!hash) return;
+
+    // Handle OAuth Error returned by Google
+    if (hash.includes('error=')) {
+      const hashParams = new URLSearchParams(hash.substring(1));
+      const error = hashParams.get('error') || 'unknown';
+      const errorDescription = hashParams.get('error_description') || '';
+      window.history.replaceState(null, '', window.location.pathname + window.location.search);
+
+      if (error === 'redirect_uri_mismatch') {
+        setErrorMessage(
+          `Помилка Google (redirect_uri_mismatch): Переконайтеся, що в Google Cloud Console у списку Authorized redirect URIs додано точну адресу: ${window.location.origin}${window.location.pathname}`
+        );
+      } else if (error === 'access_denied') {
+        setErrorMessage('Вхід через Google було скасовано користувачем.');
+      } else {
+        setErrorMessage(`Помилка Google OAuth: ${errorDescription || error}`);
+      }
+      return;
+    }
+
+    // Handle OAuth Success
+    if (hash.includes('access_token=')) {
       const hashParams = new URLSearchParams(hash.substring(1));
       const accessToken = hashParams.get('access_token');
 
       if (accessToken) {
         setIsLoading(true);
-        setSuccessMessage('Отримано відповідь від Google серверів. Завантаження профілю...');
+        setSuccessMessage('Отримано відповідь від Google. Завантаження вашого профілю...');
 
         // Fetch verified userinfo from Google's servers
         fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
           headers: { Authorization: `Bearer ${accessToken}` }
         })
           .then((res) => {
-            if (!res.ok) throw new Error('Помилка Google сервера: ' + res.status);
+            if (!res.ok) throw new Error('Google сервер повернув помилку: ' + res.status);
             return res.json();
           })
           .then(async (userInfo) => {
@@ -60,7 +80,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
 
             // Clean hash from URL bar
             window.history.replaceState(null, '', window.location.pathname + window.location.search);
-            setSuccessMessage(`Успішний вхід: ${userInfo.email}!`);
+            setSuccessMessage(`Успішний вхід: ${userInfo.name || userInfo.email}!`);
             setTimeout(() => onSuccess(user), 300);
           })
           .catch((err: any) => {
@@ -74,19 +94,19 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     }
   }, [onSuccess]);
 
-  // 1. Click "Увійти через Google" -> Direct redirect to accounts.google.com/v3/signin/accountchooser
+  // 1. Direct redirect to official Google OAuth Account Chooser
   const handleGoogleSignInClick = () => {
     setErrorMessage(null);
     const clientId = getGoogleClientId();
 
     if (!clientId) {
-      setErrorMessage('Google Client ID не знайдено в конфігурації проєкту');
+      setErrorMessage('Google Client ID не знайдено в конфігурації');
       return;
     }
 
     if (clientId.startsWith('AIzaSy')) {
       setErrorMessage(
-        'Помилка конфігурації: у файлі secrets.ts вказано API-ключ (AIzaSy...), а для входу в Google потрібен саме OAuth Client ID (що закінчується на .apps.googleusercontent.com з розділу Credentials у Google Cloud Console).'
+        'Помилка: вказано API-ключ замість Google OAuth Client ID (.apps.googleusercontent.com).'
       );
       return;
     }
@@ -96,48 +116,48 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     window.location.href = redirectUrl;
   };
 
-  // 2. Email: Send code to actual email (NEVER show on screen!)
-  const handleSendCode = async (e: React.FormEvent) => {
+  // 2. Email + Password Instant Login or Registration
+  const handleEmailAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
     setSuccessMessage(null);
 
     const cleanEmail = email.trim();
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setErrorMessage('Введіть дійсний email (наприклад: name@gmail.com)');
+    if (!cleanEmail) {
+      setErrorMessage('Введіть поштову адресу');
+      return;
+    }
+
+    if (!password || password.length < 4) {
+      setErrorMessage('Введіть пароль (мінімум 4 символи)');
       return;
     }
 
     setIsLoading(true);
     try {
-      await sendEmailVerificationCode(cleanEmail);
-      setAuthStep('otp_verify');
-      setSuccessMessage(`Лист з 6-значним кодом надіслано на ${cleanEmail}!`);
+      const { user, isNew } = await loginOrRegisterWithEmail(cleanEmail, password);
+      if (isNew) {
+        setSuccessMessage('Акаунт успішно створено! Вхід виконано.');
+      } else {
+        setSuccessMessage(`Вітаємо з поверненням, ${user.displayName}!`);
+      }
+      setTimeout(() => onSuccess(user), 300);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Помилка надсилання коду');
+      setErrorMessage(err.message || 'Помилка авторизації');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // 3. Email: Verify code from user's inbox
-  const handleVerifyCode = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMessage(null);
-    setSuccessMessage(null);
-
-    if (!otpCode.trim() || otpCode.trim().length !== 6) {
-      setErrorMessage('Введіть 6 цифр коду з листа');
-      return;
-    }
-
+  // 3. Quick Guest / Demo mode
+  const handleGuestLogin = async () => {
     setIsLoading(true);
     try {
-      const user = await verifyEmailCode(email, otpCode.trim());
-      setSuccessMessage('Код підтверджено! Вхід виконано.');
-      setTimeout(() => onSuccess(user), 300);
+      const guest = await loginAsGuest();
+      setSuccessMessage('Вхід у гостьовому режимі...');
+      setTimeout(() => onSuccess(guest), 200);
     } catch (err: any) {
-      setErrorMessage(err.message || 'Невірний код або термін дії вичерпано');
+      setErrorMessage('Помилка гостьового входу');
     } finally {
       setIsLoading(false);
     }
@@ -162,7 +182,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             SportMaster AI
           </h1>
           <p className="text-xs text-apple-subtext max-w-xs mx-auto leading-relaxed">
-            Персональний AI-трекер харчування, КБЖВ та коуч на базі Google Gemini
+            AI-трекер харчування, КБЖВ та коуч на базі Google Gemini
           </p>
         </div>
 
@@ -171,13 +191,13 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
           
           <div className="text-center pb-1">
             <h2 className="text-base font-bold text-white">Вхід до акаунту</h2>
-            <p className="text-[11px] text-white/50">Авторизація через сервери Google або пошту</p>
+            <p className="text-[11px] text-white/50">Виберіть зручний спосіб входу</p>
           </div>
 
           {/* Error Message */}
           {errorMessage && (
-            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-center gap-2.5 text-xs text-red-400 animate-in fade-in">
-              <AlertCircle size={16} className="shrink-0" />
+            <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-start gap-2.5 text-xs text-red-300 animate-in fade-in leading-relaxed">
+              <AlertCircle size={16} className="shrink-0 mt-0.5" />
               <span>{errorMessage}</span>
             </div>
           )}
@@ -190,7 +210,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             </div>
           )}
 
-          {/* 1. Official Google Button (Directly opens https://accounts.google.com/v3/signin/accountchooser) */}
+          {/* 1. Official Google Button (Direct redirect to accounts.google.com) */}
           <button
             type="button"
             onClick={handleGoogleSignInClick}
@@ -214,126 +234,93 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
           <div className="flex items-center gap-3 pt-1">
             <div className="flex-1 h-px bg-white/10" />
             <span className="text-[10px] text-white/40 uppercase tracking-wider whitespace-nowrap">
-              або за поштою з кодом
+              або за допомогою Email
             </span>
             <div className="flex-1 h-px bg-white/10" />
           </div>
 
-          {/* 2. Email Flow - STEP 1: Enter email */}
-          {authStep === 'email_input' && (
-            <form onSubmit={handleSendCode} className="space-y-3.5">
-              <div>
-                <label className="text-xs text-white/80 block mb-1.5 font-medium">
-                  Ваша Email адреса
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-white/40">
-                    <Mail size={16} />
-                  </div>
-                  <input
-                    type="email"
-                    required
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="name@gmail.com"
-                    className="w-full bg-black/50 border border-white/15 rounded-2xl pl-10 pr-4 py-3 text-xs sm:text-sm text-white placeholder-white/30 focus:outline-none focus:border-apple-green transition"
-                  />
+          {/* 2. Email + Password Instant Form */}
+          <form onSubmit={handleEmailAuthSubmit} className="space-y-3.5">
+            <div>
+              <label className="text-xs text-white/80 block mb-1.5 font-medium">
+                Email
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-white/40">
+                  <Mail size={16} />
                 </div>
+                <input
+                  type="email"
+                  required
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="name@example.com"
+                  className="w-full bg-black/50 border border-white/15 rounded-2xl pl-10 pr-4 py-3 text-xs sm:text-sm text-white placeholder-white/30 focus:outline-none focus:border-apple-green transition"
+                />
               </div>
+            </div>
 
-              <button
-                type="submit"
-                disabled={isLoading || !email.trim()}
-                className="w-full py-3.5 rounded-2xl bg-apple-green text-black font-extrabold text-xs sm:text-sm hover:bg-apple-green/90 transition shadow-lg shadow-apple-green/20 flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isLoading ? (
-                  <Loader2 size={18} className="animate-spin text-black" />
-                ) : (
-                  <>
-                    <span>Надіслати код на мою пошту</span>
-                    <ArrowRight size={16} />
-                  </>
-                )}
-              </button>
-            </form>
-          )}
-
-          {/* 2. Email Flow - STEP 2: Enter 6-digit code received in email (NEVER shown on screen!) */}
-          {authStep === 'otp_verify' && (
-            <form onSubmit={handleVerifyCode} className="space-y-4">
-              
-              <div className="p-3.5 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-200 space-y-1">
-                <div className="flex items-center gap-1.5 font-semibold text-cyan-400">
-                  <ShieldCheck size={16} />
-                  <span>Лист надіслано на вашу пошту</span>
+            <div>
+              <label className="text-xs text-white/80 block mb-1.5 font-medium">
+                Пароль
+              </label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-white/40">
+                  <Lock size={16} />
                 </div>
-                <p className="text-[11px] text-white/70 leading-relaxed">
-                  Будь ласка, перевірте вхідні або папку «Спам» на пошті <strong>{email}</strong> та введіть отриманий 6-значний код:
-                </p>
-              </div>
-
-              <div>
-                <label className="text-xs text-white/80 block mb-1.5 font-medium">
-                  Введіть 6-значний код з листа:
-                </label>
-                <div className="relative">
-                  <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-white/40">
-                    <KeyRound size={16} />
-                  </div>
-                  <input
-                    type="text"
-                    maxLength={6}
-                    required
-                    autoFocus
-                    value={otpCode}
-                    onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ''))}
-                    placeholder="______"
-                    className="w-full bg-black/50 border border-white/15 rounded-2xl pl-10 pr-4 py-3 text-center tracking-[0.4em] text-lg font-mono font-bold text-white placeholder-white/20 focus:outline-none focus:border-apple-green transition"
-                  />
-                </div>
-              </div>
-
-              <button
-                type="submit"
-                disabled={isLoading || otpCode.length !== 6}
-                className="w-full py-3.5 rounded-2xl bg-apple-green text-black font-extrabold text-xs sm:text-sm hover:bg-apple-green/90 transition shadow-lg shadow-apple-green/20 flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                {isLoading ? (
-                  <Loader2 size={18} className="animate-spin text-black" />
-                ) : (
-                  <>
-                    <span>Підтвердити та увійти</span>
-                    <CheckCircle2 size={16} />
-                  </>
-                )}
-              </button>
-
-              <div className="flex justify-between items-center text-xs text-white/50 pt-1">
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Мінімум 4 символи"
+                  className="w-full bg-black/50 border border-white/15 rounded-2xl pl-10 pr-11 py-3 text-xs sm:text-sm text-white placeholder-white/30 focus:outline-none focus:border-apple-green transition"
+                />
                 <button
                   type="button"
-                  onClick={() => {
-                    setAuthStep('email_input');
-                    setOtpCode('');
-                    setErrorMessage(null);
-                  }}
-                  className="hover:text-white transition underline"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-white/40 hover:text-white transition"
                 >
-                  Змінити email
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSendCode}
-                  className="hover:text-cyan-400 transition flex items-center gap-1"
-                >
-                  <RefreshCw size={12} />
-                  <span>Надіслати код ще раз</span>
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
+            </div>
 
-            </form>
-          )}
+            <button
+              type="submit"
+              disabled={isLoading || !email.trim() || !password}
+              className="w-full py-3.5 rounded-2xl bg-apple-green text-black font-extrabold text-xs sm:text-sm hover:bg-apple-green/90 transition shadow-lg shadow-apple-green/20 flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {isLoading ? (
+                <Loader2 size={18} className="animate-spin text-black" />
+              ) : (
+                <>
+                  <span>Увійти / Зареєструватися</span>
+                  <ArrowRight size={16} />
+                </>
+              )}
+            </button>
+          </form>
+
+          {/* 3. Demo / Guest Login */}
+          <div className="text-center pt-1 border-t border-white/5">
+            <button
+              type="button"
+              onClick={handleGuestLogin}
+              disabled={isLoading}
+              className="text-xs text-white/40 hover:text-white transition inline-flex items-center gap-1.5 py-1"
+            >
+              <Compass size={14} />
+              <span>Швидкий перегляд як гість</span>
+            </button>
+          </div>
 
         </div>
+
+        {/* Security badge footer */}
+        <p className="text-[11px] text-center text-white/30">
+          Дані надійно зберігаються на вашому пристрої з підтримкою хмарної синхронізації
+        </p>
 
       </div>
 
