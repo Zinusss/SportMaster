@@ -5,7 +5,7 @@ const STORAGE_KEYS = {
 };
 
 /**
- * Налаштування Google OAuth 2.0
+ * Налаштування Google OAuth 2.0 (тільки для входу через Google)
  */
 export const OAUTH_CONFIG = {
   // Ендпоінт авторизації Google (відкриває accountchooser)
@@ -14,14 +14,14 @@ export const OAUTH_CONFIG = {
   // Ендпоінт для отримання даних користувача
   userinfoEndpoint: 'https://www.googleapis.com/oauth2/v3/userinfo',
 
-  // Необхідні дозволи
+  // Необхідні дозволи для профілю
   scopes: ['email', 'profile', 'openid'],
 
   /**
-   * Отримати актуальний Client ID:
-   * 1. Спочатку перевіряє файл секретів src/config/secrets.ts
-   * 2. Потім перевіряє змінні оточення Vite (.env)
-   * 3. Потім перевіряє збережений у localStorage браузера
+   * Отримати Google Client ID:
+   * 1. З окремого файлу src/config/secrets.ts
+   * 2. Зі змінних оточення Vite (VITE_GOOGLE_CLIENT_ID)
+   * 3. З localStorage браузера
    */
   getClientId(): string {
     // 1. З окремого конфіг-файлу secrets.ts
@@ -55,23 +55,6 @@ export const OAUTH_CONFIG = {
   },
 
   /**
-   * Отримати актуальний Gemini API Key:
-   * 1. З secrets.ts
-   * 2. З .env
-   * 3. З localStorage
-   */
-  getDefaultGeminiKey(): string {
-    if (SECRETS.geminiApiKey && SECRETS.geminiApiKey.trim()) {
-      return SECRETS.geminiApiKey.trim();
-    }
-    const envKey = import.meta.env.VITE_GEMINI_API_KEY;
-    if (envKey && typeof envKey === 'string' && envKey.trim()) {
-      return envKey.trim();
-    }
-    return '';
-  },
-
-  /**
    * Поточний Redirect URI для GitHub Pages або localhost
    */
   getRedirectUri(): string {
@@ -80,8 +63,7 @@ export const OAUTH_CONFIG = {
   },
 
   /**
-   * Сформувати повне посилання для авторизації в Google
-   * Перенаправляє на https://accounts.google.com/v3/signin/accountchooser
+   * Сформувати посилання для перенаправлення на https://accounts.google.com/v3/signin/accountchooser
    */
   getAuthUrl(customClientId?: string): string {
     const clientId = (customClientId || this.getClientId()).trim();
@@ -92,7 +74,7 @@ export const OAUTH_CONFIG = {
       redirect_uri: this.getRedirectUri(),
       response_type: 'token',
       scope: this.scopes.join(' '),
-      prompt: 'select_account' // Примусово відкриває сторінку accountchooser
+      prompt: 'select_account' // Примусово відкриває сторінку вибору акаунта
     });
 
     return `${this.authEndpoint}?${params.toString()}`;
