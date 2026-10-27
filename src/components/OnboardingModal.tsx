@@ -4,23 +4,26 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { ActivityLevel, Gender, Goal, UserProfile } from '../types';
+import { AuthUser } from '../types/auth';
 import { ACTIVITY_LABELS, calculateNutritionTargets, GOAL_LABELS } from '../utils/nutrition';
 import { testGeminiKey } from '../services/gemini';
 
 interface OnboardingModalProps {
   isOpen: boolean;
+  currentUser: AuthUser | null;
   onComplete: (profileData: Partial<UserProfile>) => void;
 }
 
 export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   isOpen,
+  currentUser,
   onComplete
 }) => {
   const [step, setStep] = useState<number>(1);
 
   // Step 1: Google & AI Key
-  const [googleEmail, setGoogleEmail] = useState('');
-  const [userName, setUserName] = useState('');
+  const [googleEmail, setGoogleEmail] = useState(currentUser?.email || '');
+  const [userName, setUserName] = useState(currentUser?.displayName || '');
   const [apiKey, setApiKey] = useState('');
   const [isKeyValid, setIsKeyValid] = useState<boolean | null>(null);
   const [isValidatingKey, setIsValidatingKey] = useState(false);

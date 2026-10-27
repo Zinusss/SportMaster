@@ -1,96 +1,159 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ChatMessage, DayLog, FoodEntry, UserProfile } from '../types';
+import { AuthUser } from '../types/auth';
 import { calculateNutritionTargets, getTodayKey } from '../utils/nutrition';
+import { loadDataFromFirestore, syncDataToFirestore } from '../services/firebase';
 
-const STORAGE_KEYS = {
-  PROFILE: 'sportmaster_profile_v1',
-  DAYS: 'sportmaster_days_v1',
-  CHAT: 'sportmaster_chat_v1',
+const getDefaultProfile = (user?: AuthUser | null): UserProfile => {
+  const initialTargets = calculateNutritionTargets('male', 26, 75, 178, 'moderate', 'lose_weight');
+  return {
+    name: user?.displayName || 'Користувач',
+    email: user?.email || '',
+    avatar: user?.photoURL || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    gender: 'male',
+    age: 26,
+    weight: 75,
+    height: 178,
+    targetWeight: 72,
+    activityLevel: 'moderate',
+    goal: 'lose_weight',
+    calculatedTargets: initialTargets,
+    geminiApiKey: '',
+    isOnboarded: false,
+    isGoogleConnected: user?.provider === 'google'
+  };
 };
 
-const DEFAULT_PROFILE: UserProfile = {
-  name: 'Користувач',
-  email: '',
-  avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  gender: 'male',
-  age: 26,
-  weight: 75,
-  height: 178,
-  targetWeight: 72,
-  activityLevel: 'moderate',
-  goal: 'lose_weight',
-  calculatedTargets: calculateNutritionTargets('male', 26, 75, 178, 'moderate', 'lose_weight'),
-  geminiApiKey: '',
-  isOnboarded: false,
-  isGoogleConnected: false,
-};
+export function useAppData(currentUser: AuthUser | null) {
+  const uid = currentUser?.uid || 'guest';
+  const profileKey = `sportmaster_u_${uid}_profile`;
+  const daysKey = `sportmaster_u_${uid}_days`;
+  const chatKey = `sportmaster_u_${uid}_chat`;
 
-export function useAppData() {
   const [profile, setProfile] = useState<UserProfile>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.PROFILE);
+      const saved = localStorage.getItem(profileKey);
       if (saved) return JSON.parse(saved);
     } catch (e) {
-      console.error('Failed to load profile from localStorage', e);
+      console.error('Failed to load profile', e);
     }
-    return DEFAULT_PROFILE;
+    return getDefaultProfile(currentUser);
   });
 
   const [days, setDays] = useState<Record<string, DayLog>>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.DAYS);
+      const saved = localStorage.getItem(daysKey);
       if (saved) return JSON.parse(saved);
     } catch (e) {
-      console.error('Failed to load days from localStorage', e);
+      console.error('Failed to load days', e);
     }
     return {};
   });
 
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>(() => {
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.CHAT);
+      const saved = localStorage.getItem(chatKey);
       if (saved) return JSON.parse(saved);
     } catch (e) {
-      console.error('Failed to load chat from localStorage', e);
+      console.error('Failed to load chat', e);
     }
     return [
       {
         id: 'welcome',
         role: 'assistant',
-        content: 'Привіт! Я твій персональний ШІ-нутриціолог та фітнес-коуч на базі Gemini ⚡. Я готовий аналізувати твоє харчування, підбирати страви під твої цілі та відповідати на будь-які питання про тренування й здоров\'я. Як ти почуваєшся сьогодні?',
+        content: `Привіт, ${currentUser?.displayName || 'Спортсмене'}! Я твій персональний ШІ-нутриціолог та фітнес-коуч на базі Gemini ⚡. Я готовий аналізувати твоє харчування, підбирати страви під твої цілі та відповідати на будь-які питання про здоров'я. Як справи сьогодні?`,
         timestamp: new Date().toISOString()
       }
     ];
   });
 
   const [currentDate, setCurrentDate] = useState<string>(getTodayKey());
+  const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
+  const syncTimeoutRef = useRef<any>(null);
 
-  // Save changes to localStorage
+  // Reload data when user changes
+  useEffect(() => {
+    if (!currentUser) return;
+
+    try {
+      const savedProfile = localStorage.getItem(`sportmaster_u_${currentUser.uid}_profile`);
+      if (savedProfile) {
+        setProfile(JSON.parse(savedProfile));
+      } else {
+        const def = getDefaultProfile(currentUser);
+        setProfile(def);
+      }
+
+      const savedDays = localStorage.getItem(`sportmaster_u_${currentUser.uid}_days`);
+      if (savedDays) {
+        setDays(JSON.parse(savedDays));
+      } else {
+        setDays({});
+      }
+
+      const savedChat = localStorage.getItem(`sportmaster_u_${currentUser.uid}_chat`);
+      if (savedChat) {
+        setChatHistory(JSON.parse(savedChat));
+      }
+    } catch (e) {
+      console.error('Failed to switch user data', e);
+    }
+
+    // Try background cloud fetch if Firestore is active
+    loadDataFromFirestore(currentUser.uid).then((cloudData) => {
+      if (cloudData) {
+        if (cloudData.profile) setProfile(cloudData.profile);
+        if (cloudData.days) setDays(cloudData.days);
+        if (cloudData.chat) setChatHistory(cloudData.chat);
+      }
+    }).catch(() => {});
+  }, [currentUser?.uid]);
+
+  // Persist Profile
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.PROFILE, JSON.stringify(profile));
+      localStorage.setItem(profileKey, JSON.stringify(profile));
     } catch (e) {
       console.error('Failed to save profile', e);
     }
-  }, [profile]);
+    triggerCloudSync();
+  }, [profile, profileKey]);
 
+  // Persist Days
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.DAYS, JSON.stringify(days));
+      localStorage.setItem(daysKey, JSON.stringify(days));
     } catch (e) {
       console.error('Failed to save days', e);
     }
-  }, [days]);
+    triggerCloudSync();
+  }, [days, daysKey]);
 
+  // Persist Chat
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.CHAT, JSON.stringify(chatHistory));
+      localStorage.setItem(chatKey, JSON.stringify(chatHistory));
     } catch (e) {
       console.error('Failed to save chat', e);
     }
-  }, [chatHistory]);
+  }, [chatHistory, chatKey]);
 
-  // Current day data accessor
+  // Debounced cloud sync
+  const triggerCloudSync = () => {
+    if (!currentUser || currentUser.uid === 'guest') return;
+
+    if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
+    syncTimeoutRef.current = setTimeout(async () => {
+      setIsCloudSyncing(true);
+      await syncDataToFirestore(currentUser.uid, {
+        profile,
+        days,
+        chat: chatHistory
+      });
+      setIsCloudSyncing(false);
+    }, 2000);
+  };
+
   const currentDayLog: DayLog = days[currentDate] || {
     date: currentDate,
     meals: [],
@@ -102,7 +165,6 @@ export function useAppData() {
   const updateProfile = (partial: Partial<UserProfile>) => {
     setProfile((prev) => {
       const updated = { ...prev, ...partial };
-      // Recalculate targets if body metrics changed
       if (
         partial.gender !== undefined ||
         partial.age !== undefined ||
@@ -174,12 +236,11 @@ export function useAppData() {
         steps: 0,
         weight: profile.weight
       };
-      const newWater = Math.max(0, (existing.waterMl || 0) + deltaMl);
       return {
         ...prev,
         [dateKey]: {
           ...existing,
-          waterMl: newWater
+          waterMl: Math.max(0, (existing.waterMl || 0) + deltaMl)
         }
       };
     });
@@ -239,7 +300,7 @@ export function useAppData() {
       {
         id: 'welcome_new',
         role: 'assistant',
-        content: 'Чат очищено! Чим можу допомогти зараз?',
+        content: 'Чат очищено! Які питання щодо харчування та тренувань маєте зараз?',
         timestamp: new Date().toISOString()
       }
     ]);
@@ -247,17 +308,18 @@ export function useAppData() {
 
   const exportData = () => {
     const data = {
+      user: currentUser,
       profile,
       days,
       chatHistory,
-      version: '1.0.0',
+      version: '2.0.0',
       exportedAt: new Date().toISOString()
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `sportmaster-backup-${getTodayKey()}.json`;
+    a.download = `sportmaster-${currentUser?.email || 'backup'}-${getTodayKey()}.json`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -275,8 +337,10 @@ export function useAppData() {
   };
 
   const resetAllData = () => {
-    localStorage.clear();
-    setProfile(DEFAULT_PROFILE);
+    localStorage.removeItem(profileKey);
+    localStorage.removeItem(daysKey);
+    localStorage.removeItem(chatKey);
+    setProfile(getDefaultProfile(currentUser));
     setDays({});
     setChatHistory([]);
   };
@@ -298,6 +362,7 @@ export function useAppData() {
     clearChat,
     exportData,
     importData,
-    resetAllData
+    resetAllData,
+    isCloudSyncing
   };
 }
