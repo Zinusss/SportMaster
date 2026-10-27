@@ -24,15 +24,15 @@ export const OAUTH_CONFIG = {
    * 3. З localStorage браузера
    */
   getClientId(): string {
-    // 1. З окремого конфіг-файлу secrets.ts
-    if (SECRETS.googleClientId && SECRETS.googleClientId.trim()) {
-      return SECRETS.googleClientId.trim();
-    }
-
-    // 2. Зі змінних оточення Vite
-    const envClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    // 1. Зі змінних оточення Vite / GitHub Secrets під час збірки
+    const envClientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID;
     if (envClientId && typeof envClientId === 'string' && envClientId.trim()) {
       return envClientId.trim();
+    }
+
+    // 2. З окремого локального конфіг-файлу secrets.ts
+    if (SECRETS.googleClientId && SECRETS.googleClientId.trim()) {
+      return SECRETS.googleClientId.trim();
     }
 
     // 3. З пам'яті браузера

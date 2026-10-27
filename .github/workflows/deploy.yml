@@ -36,7 +36,13 @@ jobs:
         run: npm ci
 
       - name: Build
-        run: npm run build
+        env:
+          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+        run: |
+          if [ -n "${{ secrets.VITE_GOOGLE_CLIENT_ID }}" ]; then
+            echo "export const SECRETS = { googleClientId: '${{ secrets.VITE_GOOGLE_CLIENT_ID }}' };" > src/config/secrets.ts
+          fi
+          npm run build
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
