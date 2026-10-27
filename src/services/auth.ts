@@ -1,10 +1,19 @@
 import { AuthUser, UserAccountCredentials } from '../types/auth';
 
 const STORAGE_KEYS = {
-  ACCOUNTS: 'sportmaster_auth_accounts_v2',
-  SESSION: 'sportmaster_auth_session_v2',
+  ACCOUNTS: 'sportmaster_auth_accounts_v3',
+  SESSION: 'sportmaster_auth_session_v3',
   GOOGLE_CLIENT_ID: 'sportmaster_google_client_id_v1'
 };
+
+// Cryptographic SHA-256 password hash
+async function hashPassword(password: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(password + '_sportmaster_salt_2026_secure');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 export function getGoogleClientId(): string {
   try {
@@ -60,6 +69,99 @@ export function saveCurrentSession(user: AuthUser | null) {
   }
 }
 
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Register a new user with strict validation
+ */
+export async function registerWithEmailPassword(
+  displayName: string,
+  email: string,
+  password: string,
+  confirmPassword?: string
+): Promise<AuthUser> {
+  const cleanName = displayName.trim();
+  const cleanEmail = email.trim().toLowerCase();
+
+  // 1. Validation checks
+  if (!cleanName || cleanName.length < 2) {
+    throw new Error('Будь ласка, введіть ваше ім\'я (щонайменше 2 символи)');
+  }
+  if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
+    throw new Error('Введіть дійсний формат email (наприклад: name@gmail.com)');
+  }
+  if (!password || password.length < 6) {
+    throw new Error('Пароль має містити щонайменше 6 символів');
+  }
+  if (confirmPassword !== undefined && password !== confirmPassword) {
+    throw new Error('Паролі не співпадають. Перевірте введені паролі');
+  }
+
+  // 2. Check existing account
+  const accounts = getStoredAccounts();
+  if (accounts[cleanEmail]) {
+    throw new Error('Акаунт з такою поштою вже існує! Будь ласка, перейдіть до вкладки «Вхід».');
+  }
+
+  // 3. Create account with secure password hash
+  const passwordHash = await hashPassword(password);
+  const uid = 'usr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
+
+  const newUser: AuthUser = {
+    uid,
+    email: cleanEmail,
+    displayName: cleanName,
+    photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanEmail}`,
+    provider: 'password',
+    createdAt: new Date().toISOString(),
+    lastLoginAt: new Date().toISOString()
+  };
+
+  accounts[cleanEmail] = {
+    email: cleanEmail,
+    passwordHash,
+    user: newUser
+  };
+
+  saveStoredAccounts(accounts);
+  saveCurrentSession(newUser);
+  return newUser;
+}
+
+/**
+ * Log in for registered users only with strict validation
+ */
+export async function loginWithEmailPassword(email: string, password: string): Promise<AuthUser> {
+  const cleanEmail = email.trim().toLowerCase();
+
+  if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
+    throw new Error('Введіть коректну email адресу');
+  }
+  if (!password) {
+    throw new Error('Введіть пароль від вашого акаунту');
+  }
+
+  const accounts = getStoredAccounts();
+  const creds = accounts[cleanEmail];
+
+  // User must be registered!
+  if (!creds) {
+    throw new Error('Користувача з таким email не знайдено! Будь ласка, спочатку зареєструйтесь.');
+  }
+
+  const hash = await hashPassword(password);
+  if (creds.passwordHash !== hash) {
+    throw new Error('Невірний пароль! Перевірте правильність написання.');
+  }
+
+  creds.user.lastLoginAt = new Date().toISOString();
+  accounts[cleanEmail] = creds;
+  saveStoredAccounts(accounts);
+  saveCurrentSession(creds.user);
+
+  return creds.user;
+}
+
 /**
  * Register or login with Google profile data directly from Google's servers
  */
@@ -69,7 +171,11 @@ export async function loginWithGoogleData(googleProfile: {
   avatar?: string;
   sub?: string;
 }): Promise<AuthUser> {
-  const cleanEmail = (googleProfile.email || 'google.user@gmail.com').trim().toLowerCase();
+  const cleanEmail = (googleProfile.email || '').trim().toLowerCase();
+  if (!cleanEmail || !EMAIL_REGEX.test(cleanEmail)) {
+    throw new Error('Не вдалося отримати дійсний email від Google сервера');
+  }
+
   const accounts = getStoredAccounts();
   let creds = accounts[cleanEmail];
 
@@ -96,7 +202,7 @@ export async function loginWithGoogleData(googleProfile: {
 }
 
 /**
- * Parse Google JWT credential token from Google Identity Services
+ * Parse Google JWT token
  */
 export function parseJwtPayload(token: string): any {
   try {
@@ -125,19 +231,17 @@ export async function signInViaGoogleOAuthServer(clientId?: string): Promise<Aut
   return new Promise((resolve, reject) => {
     const google = (window as any).google;
 
-    // If Google Identity Services is available and client ID is provided
     if (google?.accounts?.oauth2 && effectiveClientId) {
       const client = google.accounts.oauth2.initTokenClient({
         client_id: effectiveClientId,
         scope: 'email profile openid',
         callback: async (tokenResponse: any) => {
           if (tokenResponse?.error) {
-            reject(new Error(tokenResponse.error));
+            reject(new Error('Помилка авторизації Google: ' + tokenResponse.error));
             return;
           }
 
           try {
-            // Request user details directly from Google's userinfo server
             const res = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
               headers: { Authorization: `Bearer ${tokenResponse.access_token}` }
             });
@@ -156,53 +260,9 @@ export async function signInViaGoogleOAuthServer(clientId?: string): Promise<Aut
       });
       client.requestAccessToken();
     } else {
-      // Fallback: promptless instant Google registration
-      const promptEmail = prompt('Введіть ваш Google Email:', 'myaccount@gmail.com');
-      if (!promptEmail) {
-        reject(new Error('Скасовано'));
-        return;
-      }
-      const cleanName = promptEmail.split('@')[0];
-      loginWithGoogleData({
-        email: promptEmail,
-        name: cleanName.charAt(0).toUpperCase() + cleanName.slice(1),
-        avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${promptEmail}`
-      }).then(resolve).catch(reject);
+      reject(new Error('Для входу через сервери Google налаштуйте Google Client ID або скористайтесь Реєстрацією'));
     }
   });
-}
-
-/**
- * Quick entry with zero validation (no rules, no password requirements)
- */
-export async function quickInstantLogin(identifier: string, name?: string): Promise<AuthUser> {
-  const cleanId = (identifier || 'user').trim().toLowerCase();
-  const email = cleanId.includes('@') ? cleanId : `${cleanId}@gmail.com`;
-  const accounts = getStoredAccounts();
-
-  let creds = accounts[email];
-  if (!creds) {
-    const uid = 'usr_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 6);
-    const user: AuthUser = {
-      uid,
-      email,
-      displayName: name || cleanId.split('@')[0] || 'Користувач',
-      photoURL: `https://api.dicebear.com/7.x/bottts/svg?seed=${email}`,
-      provider: 'google',
-      createdAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString()
-    };
-    creds = {
-      email,
-      passwordHash: 'INSTANT_AUTH',
-      user
-    };
-  }
-
-  accounts[email] = creds;
-  saveStoredAccounts(accounts);
-  saveCurrentSession(creds.user);
-  return creds.user;
 }
 
 export function logoutUser() {

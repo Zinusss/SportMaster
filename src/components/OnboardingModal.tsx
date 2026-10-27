@@ -34,6 +34,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const [height, setHeight] = useState<number>(178);
   const [weight, setWeight] = useState<number>(76);
   const [targetWeight, setTargetWeight] = useState<number>(72);
+  const [stepError, setStepError] = useState<string | null>(null);
 
   // Step 3: Activity & Goal
   const [activityLevel, setActivityLevel] = useState<ActivityLevel>('moderate');
@@ -52,6 +53,28 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   const calculated = calculateNutritionTargets(gender, age, weight, height, activityLevel, goal);
 
   const handleNext = () => {
+    setStepError(null);
+
+    // Validate Step 2 metrics
+    if (step === 2) {
+      if (!age || age < 12 || age > 100) {
+        setStepError('Введіть реальний вік від 12 до 100 років');
+        return;
+      }
+      if (!height || height < 100 || height > 250) {
+        setStepError('Введіть дійсний зріст від 100 до 250 см');
+        return;
+      }
+      if (!weight || weight < 30 || weight > 250) {
+        setStepError('Введіть коректну вагу від 30 до 250 кг');
+        return;
+      }
+      if (!targetWeight || targetWeight < 30 || targetWeight > 250) {
+        setStepError('Введіть коректну бажану вагу від 30 до 250 кг');
+        return;
+      }
+    }
+
     if (step === 3) {
       // Trigger celebratory confetti on reveal of personalized target
       confetti({
@@ -202,6 +225,12 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
                 Для точного розрахунку базального метаболізму за формулою Mifflin-St Jeor.
               </p>
             </div>
+
+            {stepError && (
+              <div className="p-3 rounded-2xl bg-red-500/15 border border-red-500/30 text-xs text-red-400">
+                {stepError}
+              </div>
+            )}
 
             {/* Gender */}
             <div>
