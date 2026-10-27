@@ -1,13 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Sparkles, Loader2, Mail, ArrowRight, CheckCircle2, 
-  AlertCircle, KeyRound, RefreshCw, ShieldCheck, ExternalLink, Settings
+  AlertCircle, KeyRound, RefreshCw, ShieldCheck
 } from 'lucide-react';
 import { AuthUser } from '../types/auth';
 import { 
   loginWithGoogleData, 
   getGoogleClientId,
-  saveGoogleClientId,
   getGoogleOAuthRedirectUrl,
   sendEmailVerificationCode, 
   verifyEmailCode 
@@ -24,10 +23,6 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
   // Fields
   const [email, setEmail] = useState('');
   const [otpCode, setOtpCode] = useState('');
-  
-  // Google Client ID Config Modal
-  const [showGoogleModal, setShowGoogleModal] = useState(false);
-  const [googleClientIdInput, setGoogleClientIdInput] = useState(getGoogleClientId());
 
   // Status
   const [isLoading, setIsLoading] = useState(false);
@@ -79,33 +74,25 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     }
   }, [onSuccess]);
 
-  // 1. Click "Увійти через Google" -> Redirect to accounts.google.com/v3/signin/accountchooser
+  // 1. Click "Увійти через Google" -> Direct redirect to accounts.google.com/v3/signin/accountchooser
   const handleGoogleSignInClick = () => {
     setErrorMessage(null);
     const clientId = getGoogleClientId();
 
     if (!clientId) {
-      // Need user's Google Client ID to open the official accountchooser
-      setShowGoogleModal(true);
+      setErrorMessage('Google Client ID не знайдено в конфігурації проєкту');
+      return;
+    }
+
+    if (clientId.startsWith('AIzaSy')) {
+      setErrorMessage(
+        'Помилка конфігурації: у файлі secrets.ts вказано API-ключ (AIzaSy...), а для входу в Google потрібен саме OAuth Client ID (що закінчується на .apps.googleusercontent.com з розділу Credentials у Google Cloud Console).'
+      );
       return;
     }
 
     // Redirect directly to Google OAuth Account Chooser
     const redirectUrl = getGoogleOAuthRedirectUrl(clientId);
-    window.location.href = redirectUrl;
-  };
-
-  const handleSaveAndRedirectGoogle = () => {
-    if (!googleClientIdInput.trim()) {
-      setErrorMessage('Введіть ваш Google Client ID');
-      return;
-    }
-
-    saveGoogleClientId(googleClientIdInput.trim());
-    setShowGoogleModal(false);
-
-    // Redirect to Google's official account chooser immediately
-    const redirectUrl = getGoogleOAuthRedirectUrl(googleClientIdInput.trim());
     window.location.href = redirectUrl;
   };
 
@@ -203,7 +190,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             </div>
           )}
 
-          {/* 1. Official Google Button (Opens https://accounts.google.com/v3/signin/accountchooser) */}
+          {/* 1. Official Google Button (Directly opens https://accounts.google.com/v3/signin/accountchooser) */}
           <button
             type="button"
             onClick={handleGoogleSignInClick}
@@ -220,7 +207,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
                 <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
               </svg>
             )}
-            <span>Увійти через Google (accounts.google.com)</span>
+            <span>Увійти через Google</span>
           </button>
 
           {/* Divider */}
@@ -348,88 +335,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
 
         </div>
 
-        {/* Settings button for Google Client ID */}
-        <div className="text-center">
-          <button
-            type="button"
-            onClick={() => setShowGoogleModal(true)}
-            className="text-[11px] text-white/40 hover:text-white/70 flex items-center justify-center gap-1.5 mx-auto transition"
-          >
-            <Settings size={12} />
-            <span>Налаштувати Google OAuth Client ID</span>
-          </button>
-        </div>
-
       </div>
-
-      {/* Google OAuth Modal for entering Client ID */}
-      {showGoogleModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-          <div className="w-full max-w-sm bg-[#1C1C1E] border border-white/10 rounded-3xl p-5 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <h3 className="text-sm font-bold text-white flex items-center gap-2">
-                <span>Google OAuth 2.0 Налаштування</span>
-              </h3>
-              <button
-                onClick={() => setShowGoogleModal(false)}
-                className="text-xs text-white/50 hover:text-white"
-              >
-                Закрити
-              </button>
-            </div>
-
-            <p className="text-xs text-white/70 leading-relaxed">
-              Щоб Google відкривав сторінку вибору акаунта <strong>https://accounts.google.com/v3/signin/accountchooser</strong>, вставте ваш <strong>Google Client ID</strong> з безкоштовної панелі Google Cloud:
-            </p>
-
-            <div>
-              <label className="text-[11px] text-white/60 block mb-1">
-                Google Web Client ID:
-              </label>
-              <input
-                type="text"
-                value={googleClientIdInput}
-                onChange={(e) => setGoogleClientIdInput(e.target.value)}
-                placeholder="123456789-xxx.apps.googleusercontent.com"
-                className="w-full bg-black/50 border border-white/10 rounded-xl px-3 py-2 text-xs text-white font-mono placeholder-white/20 focus:outline-none focus:border-apple-green"
-              />
-            </div>
-
-            <a
-              href="https://console.cloud.google.com/apis/credentials"
-              target="_blank"
-              rel="noreferrer"
-              className="text-[11px] text-purple-400 hover:text-purple-300 underline flex items-center gap-1"
-            >
-              <span>Створити Client ID в Google Cloud Console (безкоштовно)</span>
-              <ExternalLink size={11} />
-            </a>
-
-            <div className="text-[10px] text-white/40 leading-relaxed bg-black/30 p-2.5 rounded-xl border border-white/5">
-              У налаштуваннях Google Client ID вкажіть:<br />
-              <strong>Authorized JavaScript origins:</strong> {window.location.origin}<br />
-              <strong>Authorized redirect URIs:</strong> {window.location.origin + window.location.pathname}
-            </div>
-
-            <div className="flex gap-2 pt-1">
-              <button
-                type="button"
-                onClick={() => setShowGoogleModal(false)}
-                className="flex-1 py-2.5 rounded-xl bg-white/10 text-white text-xs font-semibold hover:bg-white/15 transition"
-              >
-                Скасувати
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveAndRedirectGoogle}
-                className="flex-1 py-2.5 rounded-xl bg-apple-green text-black text-xs font-bold hover:bg-apple-green/90 transition shadow-md shadow-apple-green/20"
-              >
-                Зберегти та відкрити Google
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
     </div>
   );
