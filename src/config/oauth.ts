@@ -1,5 +1,3 @@
-import { SECRETS } from './secrets';
-
 const STORAGE_KEYS = {
   CLIENT_ID: 'sportmaster_google_client_id_v2'
 };
@@ -8,6 +6,13 @@ const STORAGE_KEYS = {
  * Офіційний Google OAuth 2.0 Web Client ID додатку SportMaster AI
  */
 export const DEFAULT_GOOGLE_CLIENT_ID = '316953474615-lsngumkt43hundno1vvjuljfl0pnk13p.apps.googleusercontent.com';
+
+// Автоматично очищаємо старі закешовані неробочі ключі з localStorage користувача
+try {
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem(STORAGE_KEYS.CLIENT_ID);
+  }
+} catch (e) {}
 
 /**
  * Налаштування Google OAuth 2.0 (тільки для входу через Google)
@@ -24,42 +29,17 @@ export const OAUTH_CONFIG = {
 
   /**
    * Отримати Google Client ID:
-   * 1. Зі змінних оточення Vite / GitHub Secrets (VITE_GOOGLE_CLIENT_ID)
-   * 2. З файлу secrets.ts
-   * 3. З пам'яті браузера (localStorage)
-   * 4. За замовчуванням вшитий Client ID додатку
+   * Завжди повертає актуальний офіційний Client ID додатку
    */
   getClientId(): string {
-    // 1. Зі змінних оточення Vite під час збірки
-    const envClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
-    if (envClientId && typeof envClientId === 'string' && envClientId.trim()) {
-      return envClientId.trim();
-    }
-
-    // 2. З локального конфіг-файлу secrets.ts
-    if (SECRETS.googleClientId && SECRETS.googleClientId.trim()) {
-      return SECRETS.googleClientId.trim();
-    }
-
-    // 3. З пам'яті браузера (якщо користувач змінив у налаштуваннях)
-    try {
-      const stored = localStorage.getItem(STORAGE_KEYS.CLIENT_ID);
-      if (stored && stored.trim()) return stored.trim();
-    } catch (e) {}
-
-    // 4. Постійний офіційний Client ID додатку
     return DEFAULT_GOOGLE_CLIENT_ID;
   },
 
   /**
-   * Зберегти Client ID в пам'ять браузера
+   * Зберегти Client ID
    */
-  setClientId(clientId: string) {
-    try {
-      localStorage.setItem(STORAGE_KEYS.CLIENT_ID, clientId.trim());
-    } catch (e) {
-      console.error('Failed to save Client ID to localStorage', e);
-    }
+  setClientId(_clientId: string) {
+    // Вшитий Client ID є фіксованим
   },
 
   /**
