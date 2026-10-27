@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Sparkles, Loader2, Mail, Lock, Eye, EyeOff, 
-  ArrowRight, CheckCircle2, AlertCircle, Compass
+  ArrowRight, CheckCircle2, AlertCircle, Compass, Settings
 } from 'lucide-react';
 import { AuthUser } from '../types/auth';
 import { 
   loginWithGoogleData, 
   getGoogleClientId,
+  saveGoogleClientId,
   getGoogleOAuthRedirectUrl,
   loginOrRegisterWithEmail,
   loginAsGuest
@@ -21,6 +22,10 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  // Manual Client ID input fallback
+  const [customClientId, setCustomClientId] = useState('');
+  const [showClientIdInput, setShowClientIdInput] = useState(false);
 
   // Status
   const [isLoading, setIsLoading] = useState(false);
@@ -100,13 +105,15 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     const clientId = getGoogleClientId();
 
     if (!clientId) {
-      setErrorMessage('Google Client ID не знайдено в конфігурації');
+      setShowClientIdInput(true);
+      setErrorMessage('Google Client ID не знайдено на сервері. Введіть ваш Client ID нижче (він збережеться у вашому браузері).');
       return;
     }
 
     if (clientId.startsWith('AIzaSy')) {
+      setShowClientIdInput(true);
       setErrorMessage(
-        'Помилка: вказано API-ключ замість Google OAuth Client ID (.apps.googleusercontent.com).'
+        'Помилка: вказано API-ключ Gemini замість Google OAuth Client ID (.apps.googleusercontent.com).'
       );
       return;
     }
@@ -116,7 +123,28 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     window.location.href = redirectUrl;
   };
 
-  // 2. Email + Password Instant Login or Registration
+  // 2. Save Client ID locally and immediately trigger login
+  const handleSaveClientIdAndLogin = () => {
+    const trimmed = customClientId.trim();
+    if (!trimmed) {
+      setErrorMessage('Введіть Client ID');
+      return;
+    }
+
+    if (trimmed.startsWith('AIzaSy')) {
+      setErrorMessage('Помилка: це API-ключ Gemini (AIzaSy...), а потрібен OAuth Client ID (закінчується на .apps.googleusercontent.com)');
+      return;
+    }
+
+    saveGoogleClientId(trimmed);
+    setShowClientIdInput(false);
+    setErrorMessage(null);
+
+    const redirectUrl = getGoogleOAuthRedirectUrl(trimmed);
+    window.location.href = redirectUrl;
+  };
+
+  // 3. Email + Password Instant Login or Registration
   const handleEmailAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage(null);
@@ -149,7 +177,7 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     }
   };
 
-  // 3. Quick Guest / Demo mode
+  // 4. Quick Guest / Demo mode
   const handleGuestLogin = async () => {
     setIsLoading(true);
     try {
@@ -194,11 +222,38 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             <p className="text-[11px] text-white/50">Виберіть зручний спосіб входу</p>
           </div>
 
-          {/* Error Message */}
+          {/* Error Message + Client ID fallback input */}
           {errorMessage && (
             <div className="p-3.5 rounded-2xl bg-red-500/15 border border-red-500/30 flex items-start gap-2.5 text-xs text-red-300 animate-in fade-in leading-relaxed">
               <AlertCircle size={16} className="shrink-0 mt-0.5" />
-              <span>{errorMessage}</span>
+              <div className="space-y-2.5 flex-1">
+                <span>{errorMessage}</span>
+
+                {showClientIdInput && (
+                  <div className="pt-2 border-t border-red-500/20 space-y-2">
+                    <p className="text-[11px] text-white/80">
+                      Вставте ваш Google Client ID (збережеться тільки у вашому браузері):
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        autoFocus
+                        placeholder="...apps.googleusercontent.com"
+                        value={customClientId}
+                        onChange={(e) => setCustomClientId(e.target.value)}
+                        className="flex-1 bg-black/60 border border-white/20 rounded-xl px-3 py-2 text-xs text-white placeholder-white/30 font-mono focus:outline-none focus:border-apple-green"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleSaveClientIdAndLogin}
+                        className="px-3.5 py-2 bg-white text-black font-bold rounded-xl text-xs hover:bg-neutral-200 transition shrink-0"
+                      >
+                        Увійти
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
@@ -302,16 +357,31 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
             </button>
           </form>
 
-          {/* 3. Demo / Guest Login */}
-          <div className="text-center pt-1 border-t border-white/5">
+          {/* 3. Demo / Guest Login & Settings Toggle */}
+          <div className="flex justify-between items-center pt-1 border-t border-white/5 text-xs text-white/40">
             <button
               type="button"
               onClick={handleGuestLogin}
               disabled={isLoading}
-              className="text-xs text-white/40 hover:text-white transition inline-flex items-center gap-1.5 py-1"
+              className="hover:text-white transition inline-flex items-center gap-1.5 py-1"
             >
               <Compass size={14} />
               <span>Швидкий перегляд як гість</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowClientIdInput(!showClientIdInput);
+                if (!errorMessage) {
+                  setErrorMessage(showClientIdInput ? null : 'Введіть ваш Google Client ID для збереження в цьому браузері:');
+                }
+              }}
+              className="hover:text-white/80 transition inline-flex items-center gap-1 py-1 text-[11px]"
+              title="Налаштування Client ID"
+            >
+              <Settings size={13} />
+              <span>OAuth налаштування</span>
             </button>
           </div>
 

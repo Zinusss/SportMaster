@@ -5,19 +5,19 @@ on:
     branches: [ main, master ]
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
 concurrency:
   group: "pages"
   cancel-in-progress: true
 
 jobs:
   build:
+    environment:
+      name: github-pages
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -34,13 +34,20 @@ jobs:
 
       - name: Build
         env:
-          VITE_GOOGLE_CLIENT_ID: ${{ secrets.VITE_GOOGLE_CLIENT_ID || secrets.GOOGLE_CLIENT_ID || secrets.CLIENT_ID }}
+          SECRET_A: ${{ secrets.VITE_GOOGLE_CLIENT_ID }}
+          SECRET_B: ${{ secrets.GOOGLE_CLIENT_ID }}
+          SECRET_C: ${{ secrets.CLIENT_ID }}
+          VAR_A: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+          VAR_B: ${{ vars.GOOGLE_CLIENT_ID }}
+          VAR_C: ${{ vars.CLIENT_ID }}
         run: |
-          if [ -n "$VITE_GOOGLE_CLIENT_ID" ]; then
-            echo "✅ Google Client ID found in GitHub Secrets, embedding into secrets.ts..."
-            echo "export const SECRETS = { googleClientId: '$VITE_GOOGLE_CLIENT_ID' };" > src/config/secrets.ts
+          CLIENT_ID="${SECRET_A:-${SECRET_B:-${SECRET_C:-${VAR_A:-${VAR_B:-${VAR_C}}}}}}}"
+          if [ -n "$CLIENT_ID" ]; then
+            echo "✅ Google Client ID found, injecting into secrets.ts..."
+            export VITE_GOOGLE_CLIENT_ID="$CLIENT_ID"
+            echo "export const SECRETS = { googleClientId: '$CLIENT_ID' };" > src/config/secrets.ts
           else
-            echo "⚠️ WARNING: Google Client ID secret not found in GitHub repository secrets!"
+            echo "⚠️ No Google Client ID found in secrets or vars!"
           fi
           npm run build
 
