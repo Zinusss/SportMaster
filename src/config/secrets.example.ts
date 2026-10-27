@@ -1,9 +1,6 @@
 /**
- * Шаблон для Google OAuth Client ID.
- * Для локальної розробки вставте ваш Google Client ID у файл "src/config/secrets.ts".
- * Файл "src/config/secrets.ts" додано в .gitignore і він ніколи не потрапить на GitHub.
+ * Конфігурація Google OAuth Web Client ID для додатку SportMaster AI
  */
 export const SECRETS = {
-  // Тільки Google OAuth 2.0 Web Client ID для входу через Google
-  googleClientId: ''
+  googleClientId: '316953474615-97p2i6mai8feb9c6i486tce53kr3clmk.apps.googleusercontent.com'
 };

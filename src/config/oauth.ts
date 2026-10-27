@@ -5,6 +5,11 @@ const STORAGE_KEYS = {
 };
 
 /**
+ * Офіційний Google OAuth 2.0 Web Client ID додатку SportMaster AI
+ */
+export const DEFAULT_GOOGLE_CLIENT_ID = '316953474615-97p2i6mai8feb9c6i486tce53kr3clmk.apps.googleusercontent.com';
+
+/**
  * Налаштування Google OAuth 2.0 (тільки для входу через Google)
  */
 export const OAUTH_CONFIG = {
@@ -20,28 +25,30 @@ export const OAUTH_CONFIG = {
   /**
    * Отримати Google Client ID:
    * 1. Зі змінних оточення Vite / GitHub Secrets (VITE_GOOGLE_CLIENT_ID)
-   * 2. З окремого локального конфіг-файлу secrets.ts (у .gitignore)
+   * 2. З файлу secrets.ts
    * 3. З пам'яті браузера (localStorage)
+   * 4. За замовчуванням вшитий Client ID додатку
    */
   getClientId(): string {
-    // 1. Зі змінних оточення Vite / GitHub Secrets під час збірки
+    // 1. Зі змінних оточення Vite під час збірки
     const envClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     if (envClientId && typeof envClientId === 'string' && envClientId.trim()) {
       return envClientId.trim();
     }
 
-    // 2. З ізольованого локального конфіг-файлу secrets.ts
+    // 2. З локального конфіг-файлу secrets.ts
     if (SECRETS.googleClientId && SECRETS.googleClientId.trim()) {
       return SECRETS.googleClientId.trim();
     }
 
-    // 3. З пам'яті браузера
+    // 3. З пам'яті браузера (якщо користувач змінив у налаштуваннях)
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.CLIENT_ID);
       if (stored && stored.trim()) return stored.trim();
     } catch (e) {}
 
-    return '';
+    // 4. Постійний офіційний Client ID додатку
+    return DEFAULT_GOOGLE_CLIENT_ID;
   },
 
   /**
