@@ -7,7 +7,7 @@ const STORAGE_KEYS = {
 /**
  * Офіційний Google OAuth 2.0 Web Client ID додатку SportMaster AI
  */
-export const DEFAULT_GOOGLE_CLIENT_ID = '316953474615-97p2i6mai8feb9c6i486tce53kr3clmk.apps.googleusercontent.com';
+export const DEFAULT_GOOGLE_CLIENT_ID = '316953474615-lsngumkt43hundno1vvjuljfl0pnk13p.apps.googleusercontent.com';
 
 /**
  * Налаштування Google OAuth 2.0 (тільки для входу через Google)
