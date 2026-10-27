@@ -1,9 +1,9 @@
 import { AuthUser, UserAccountCredentials } from '../types/auth';
+import { OAUTH_CONFIG } from '../config/oauth';
 
 const STORAGE_KEYS = {
   ACCOUNTS: 'sportmaster_auth_accounts_v4',
   SESSION: 'sportmaster_auth_session_v4',
-  GOOGLE_CLIENT_ID: 'sportmaster_google_client_id_v2',
   PENDING_OTP: 'sportmaster_pending_otp_v2'
 };
 
@@ -16,19 +16,11 @@ interface PendingOTP {
 }
 
 export function getGoogleClientId(): string {
-  try {
-    return localStorage.getItem(STORAGE_KEYS.GOOGLE_CLIENT_ID) || '';
-  } catch (e) {
-    return '';
-  }
+  return OAUTH_CONFIG.getClientId();
 }
 
 export function saveGoogleClientId(clientId: string) {
-  try {
-    localStorage.setItem(STORAGE_KEYS.GOOGLE_CLIENT_ID, clientId.trim());
-  } catch (e) {
-    console.error('Failed to save Google Client ID', e);
-  }
+  OAUTH_CONFIG.setClientId(clientId);
 }
 
 function getStoredAccounts(): Record<string, UserAccountCredentials> {
@@ -73,20 +65,8 @@ export function saveCurrentSession(user: AuthUser | null) {
  * 1. Build official Google OAuth 2.0 authorization URL
  * This directly opens https://accounts.google.com/v3/signin/accountchooser
  */
-export function getGoogleOAuthRedirectUrl(clientId: string): string {
-  const cleanId = clientId.trim();
-  // Strip trailing hash/query from redirect uri
-  const redirectUri = window.location.origin + window.location.pathname;
-  
-  const params = new URLSearchParams({
-    client_id: cleanId,
-    redirect_uri: redirectUri,
-    response_type: 'token',
-    scope: 'email profile openid',
-    prompt: 'select_account' // Forces Google Account Chooser screen!
-  });
-
-  return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+export function getGoogleOAuthRedirectUrl(clientId?: string): string {
+  return OAUTH_CONFIG.getAuthUrl(clientId);
 }
 
 /**

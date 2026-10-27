@@ -3,6 +3,7 @@ import { ChatMessage, DayLog, FoodEntry, UserProfile } from '../types';
 import { AuthUser } from '../types/auth';
 import { calculateNutritionTargets, getTodayKey } from '../utils/nutrition';
 import { loadDataFromFirestore, syncDataToFirestore } from '../services/firebase';
+import { OAUTH_CONFIG } from '../config/oauth';
 
 const getDefaultProfile = (user?: AuthUser | null): UserProfile => {
   const initialTargets = calculateNutritionTargets('male', 26, 75, 178, 'moderate', 'lose_weight');
@@ -18,7 +19,7 @@ const getDefaultProfile = (user?: AuthUser | null): UserProfile => {
     activityLevel: 'moderate',
     goal: 'lose_weight',
     calculatedTargets: initialTargets,
-    geminiApiKey: '',
+    geminiApiKey: OAUTH_CONFIG.getDefaultGeminiKey(),
     isOnboarded: false,
     isGoogleConnected: user?.provider === 'google'
   };
