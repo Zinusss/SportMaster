@@ -70,13 +70,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       avatar: googleEmail
         ? `https://api.dicebear.com/7.x/bottts/svg?seed=${googleEmail}`
         : 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
-      isGoogleConnected: !!googleEmail,
+      isGoogleConnected: true,
       geminiApiKey: apiKey.trim(),
       gender,
-      age,
-      height,
-      weight,
-      targetWeight,
+      age: Number(age) || 25,
+      height: Number(height) || 178,
+      weight: Number(weight) || 75,
+      targetWeight: Number(targetWeight) || 72,
       activityLevel,
       goal,
       calculatedTargets: calculated,
