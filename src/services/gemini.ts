@@ -1,20 +1,21 @@
 import { ChatMessage, FoodAnalysisResult } from '../types';
 
-// Список моделей і версій API у порядку пріоритету
+// Список моделей і версій API у порядку пріоритету (спочатку моделі з найвищою квотою 15 RPM / 1500 RPD)
 const MODEL_CANDIDATES = [
-  { version: 'v1beta', model: 'gemini-2.5-flash' },
-  { version: 'v1beta', model: 'gemini-2.0-flash' },
   { version: 'v1beta', model: 'gemini-1.5-flash' },
+  { version: 'v1beta', model: 'gemini-2.0-flash' },
+  { version: 'v1beta', model: 'gemini-1.5-flash-8b' },
   { version: 'v1', model: 'gemini-1.5-flash' },
-  { version: 'v1beta', model: 'gemini-1.5-flash-latest' },
-  { version: 'v1beta', model: 'gemini-1.5-pro' }
+  { version: 'v1beta', model: 'gemini-2.0-flash-lite-preview-02-05' },
+  { version: 'v1beta', model: 'gemini-1.5-pro' },
+  { version: 'v1beta', model: 'gemini-2.5-flash' }
 ];
 
 let activeModelCache: { version: string; model: string } | null = null;
 
 /**
  * Динамічно запитує у Google список доступних моделей для конкретного API-ключа користувача.
- * Це гарантує, що запит піде до реально існуючої моделі та ніколи не видасть 404 Not Found.
+ * Пріоритет віддається стабільним моделям з максимальною квотою запитів (15 RPM).
  */
 async function discoverSupportedModel(apiKey: string): Promise<{ version: string; model: string } | null> {
   if (activeModelCache) return activeModelCache;
@@ -29,11 +30,12 @@ async function discoverSupportedModel(apiKey: string): Promise<{ version: string
       );
 
       const priorityOrder = [
-        'gemini-2.5-flash',
-        'gemini-2.0-flash',
         'gemini-1.5-flash',
-        'gemini-1.5-flash-latest',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash-8b',
+        'gemini-2.0-flash-lite-preview-02-05',
         'gemini-1.5-pro',
+        'gemini-2.5-flash',
         'gemini-pro'
       ];
 
@@ -87,6 +89,7 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; m
 
   const trimmedKey = apiKey.trim();
   let lastErrorMessage = '';
+  let rateLimitCount = 0;
 
   // 1. Спробуємо динамічно виявити підтримувані моделі для цього ключа
   const discovered = await discoverSupportedModel(trimmedKey);
@@ -114,6 +117,12 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; m
       const errData = await res.json().catch(() => ({}));
       lastErrorMessage = errData?.error?.message || `HTTP ${res.status}`;
 
+      // Якщо модель перевантажена (429) — не зупиняємось, пробуємо іншу модель
+      if (res.status === 429 || lastErrorMessage.toLowerCase().includes('resource_exhausted')) {
+        rateLimitCount++;
+        continue;
+      }
+
       // If it's an invalid key (400 / 403), no need to try other models
       if (res.status === 400 && lastErrorMessage.toLowerCase().includes('api_key_invalid')) {
         return { valid: false, error: 'Недійсний Gemini API ключ. Перевірте правильність копіювання.' };
@@ -121,6 +130,13 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; m
     } catch (e: any) {
       lastErrorMessage = e.message || 'Помилка мережі';
     }
+  }
+
+  if (rateLimitCount > 0 && rateLimitCount >= candidates.length) {
+    return {
+      valid: false,
+      error: 'Ключ дійсний, але досягнуто тимчасового ліміту запитів Google (Rate Limit). Зачекайте 20 секунд.'
+    };
   }
 
   if (lastErrorMessage.includes('not found') || lastErrorMessage.includes('404')) {
@@ -134,19 +150,25 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; m
 }
 
 /**
- * Calls Gemini with dynamic model discovery and automatic fallback across models and API versions
+ * Calls Gemini with dynamic model discovery and AUTOMATIC MODEL SWAPPING on rate limits (429)
  */
 async function callGemini(apiKey: string, body: any): Promise<string> {
   const trimmedKey = apiKey.trim();
   let lastError: any = null;
+  const rateLimitedModels: string[] = [];
 
-  // Динамічно визначаємо робочу модель або беремо з кешу
+  // Динамічно визначаємо список моделей, ставлячи активну першою
   const discovered = await discoverSupportedModel(trimmedKey);
-  const candidates = discovered
-    ? [discovered, ...MODEL_CANDIDATES.filter((c) => c.model !== discovered.model)]
-    : MODEL_CANDIDATES;
+  let candidates = [...MODEL_CANDIDATES];
+  if (discovered) {
+    candidates = [
+      discovered,
+      ...MODEL_CANDIDATES.filter((c) => c.model !== discovered.model || c.version !== discovered.version)
+    ];
+  }
 
-  for (const { version, model } of candidates) {
+  for (let i = 0; i < candidates.length; i++) {
+    const { version, model } = candidates[i];
     try {
       const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${trimmedKey}`;
       const res = await fetch(url, {
@@ -159,12 +181,24 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
         const err = await res.json().catch(() => ({}));
         const msg = err?.error?.message || `Помилка Gemini API (${model}): ${res.status}`;
 
-        // Rate limit (429) -> швидка зупинка з дружнім поясненням
-        if (res.status === 429 || msg.toLowerCase().includes('resource_exhausted')) {
-          throw new Error('Перевищено хвилинний ліміт запитів Gemini (Rate Limit). Зачекайте 15-20 секунд та повторіть запит.');
+        // Rate limit (429 / RESOURCE_EXHAUSTED / quota exceeded) -> АВТОМАТИЧНИЙ СВАП МОДЕЛІ!
+        if (
+          res.status === 429 || 
+          msg.toLowerCase().includes('resource_exhausted') || 
+          msg.toLowerCase().includes('quota')
+        ) {
+          rateLimitedModels.push(model);
+          console.warn(
+            `[SportMaster AI] Модель ${model} досягла ліміту (429). Автоматично свапаємо на наступну модель у списку...`
+          );
+          // Скидаємо закешовану модель, щоб вона не блокувала наступні виклики
+          activeModelCache = null;
+          lastError = new Error(`Ліміт вичерпано на моделі ${model}`);
+          // Переходимо до наступної моделі в циклі!
+          continue;
         }
 
-        // Недійсний ключ (400) -> швидка зупинка
+        // Недійсний ключ (400) -> тут свапати немає сенсу, ключ хибний
         if (res.status === 400 && msg.toLowerCase().includes('api_key_invalid')) {
           throw new Error('Недійсний Gemini API ключ. Перевірте правильність копіювання ключа в Профілі.');
         }
@@ -176,19 +210,23 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) throw new Error('Порожня відповідь від моделі');
 
-      // Запам'ятовуємо успішну модель
+      // Успішно! Запам'ятовуємо працюючу модель на сесію
       activeModelCache = { version, model };
       return text;
     } catch (err: any) {
-      if (
-        err.message && 
-        (err.message.includes('Rate Limit') || err.message.includes('Недійсний Gemini API ключ'))
-      ) {
+      if (err.message && err.message.includes('Недійсний Gemini API ключ')) {
         throw err;
       }
-      console.warn(`Gemini (${model} ${version}) failed, trying next candidate:`, err);
+      console.warn(`Gemini (${model} ${version}) помилка або ліміт, перемикаємось далі:`, err);
       lastError = err;
     }
+  }
+
+  // Якщо ВСІ моделі вичерпали ліміти
+  if (rateLimitedModels.length > 0 && rateLimitedModels.length >= candidates.length - 1) {
+    throw new Error(
+      `Усі доступні моделі Gemini (${rateLimitedModels.join(', ')}) тимчасово вичерпали хвилинний ліміт безкоштовної квоти Google. Зачекайте 20-30 секунд для скидання ліміту.`
+    );
   }
 
   const rawMsg = lastError?.message || '';
