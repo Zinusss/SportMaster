@@ -92,6 +92,40 @@ export function clearGoogleDriveSession(): void {
 }
 
 /**
+ * Обробка помилок Google Drive REST API з детальною діагностикою
+ */
+async function handleDriveApiError(res: Response, action: string): Promise<never> {
+  const errData = await res.json().catch(() => ({}));
+  const errMsg = errData?.error?.message || '';
+  const reason = errData?.error?.errors?.[0]?.reason || '';
+
+  if (res.status === 403) {
+    if (
+      errMsg.includes('has not been used in project') ||
+      errMsg.includes('disabled') ||
+      reason === 'accessNotConfigured'
+    ) {
+      throw new Error(
+        'У вашому Google Cloud проєкті вимкнено Google Drive API. Будь ласка, перейдіть за посиланням https://console.cloud.google.com/apis/library/drive.googleapis.com та натисніть «Увімкнути» (Enable).'
+      );
+    }
+    if (reason === 'insufficientPermissions' || errMsg.toLowerCase().includes('insufficient')) {
+      clearGoogleDriveSession();
+      throw new Error(
+        'Сесія не має дозволу на Google Диск. Натисніть «Оновити сесію Google» та надайте доступ до додатка.'
+      );
+    }
+  }
+
+  if (res.status === 401) {
+    clearGoogleDriveSession();
+    throw new Error('Сесія Google закінчилася. Натисніть «Оновити сесію Google».');
+  }
+
+  throw new Error(`Помилка Google Диску (${action} ${res.status}): ${errMsg || 'Запит відхилено'}`);
+}
+
+/**
  * Знайти існуючий файл бекапу в папці appDataFolder
  */
 async function findAppDataFileId(token: string): Promise<string | null> {
@@ -105,9 +139,11 @@ async function findAppDataFileId(token: string): Promise<string | null> {
       if (checkRes.ok) {
         const checkData = await checkRes.json();
         if (!checkData.trashed) return cachedId;
+      } else if (checkRes.status === 401 || checkRes.status === 403) {
+        await handleDriveApiError(checkRes, 'перевірка');
       }
-    } catch (e) {
-      // Якщо перевірка закешованого ID впала, шукаємо через API
+    } catch (e: any) {
+      if (e.message && e.message.includes('Google Drive API')) throw e;
     }
   }
 
@@ -120,7 +156,7 @@ async function findAppDataFileId(token: string): Promise<string | null> {
   });
 
   if (!res.ok) {
-    throw new Error(`Помилка пошуку файлу на Google Диску (${res.status})`);
+    await handleDriveApiError(res, 'пошук');
   }
 
   const data = await res.json();
@@ -153,13 +189,14 @@ export async function loadDataFromGoogleDrive(): Promise<AppDataBackupPayload | 
         localStorage.removeItem(STORAGE_KEYS.FILE_ID);
         return null;
       }
-      throw new Error(`Помилка завантаження файлу з Google Диску (${res.status})`);
+      await handleDriveApiError(res, 'завантаження');
     }
 
     const payload: AppDataBackupPayload = await res.json();
     return payload;
-  } catch (err) {
+  } catch (err: any) {
     console.warn('Google Drive download failed:', err);
+    if (err.message && err.message.includes('Google Drive API')) throw err;
     return null;
   }
 }
@@ -212,9 +249,11 @@ export async function syncDataToGoogleDrive(data: {
         return { success: true, timestamp: now };
       }
 
-      // Якщо файл чомусь зник (404), створимо наново нижче
-      if (patchRes.status !== 404) {
-        throw new Error(`Помилка оновлення Google Диску (${patchRes.status})`);
+      // Якщо файл видалено (404), створимо новий нижче
+      if (patchRes.status === 404) {
+        localStorage.removeItem(STORAGE_KEYS.FILE_ID);
+      } else {
+        await handleDriveApiError(patchRes, 'оновлення');
       }
     }
 
@@ -255,8 +294,7 @@ export async function syncDataToGoogleDrive(data: {
     );
 
     if (!createRes.ok) {
-      const errText = await createRes.text();
-      throw new Error(`Помилка створення файлу (${createRes.status}): ${errText}`);
+      await handleDriveApiError(createRes, 'створення');
     }
 
     const createdData = await createRes.json();

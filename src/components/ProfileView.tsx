@@ -281,7 +281,33 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
           </div>
 
           {syncStatusMsg && (
-            <p className="text-[10px] text-apple-green pt-1 animate-fade-in font-medium">{syncStatusMsg}</p>
+            <div className={`text-[11px] p-2.5 rounded-xl border animate-fade-in leading-relaxed ${
+              syncStatusMsg.includes('Помилка') || syncStatusMsg.includes('вимкнено') || syncStatusMsg.includes('дозвіл')
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                : 'bg-apple-green/10 border-apple-green/30 text-apple-green font-medium'
+            }`}>
+              <div className="flex items-start gap-2">
+                {syncStatusMsg.includes('Помилка') || syncStatusMsg.includes('вимкнено') || syncStatusMsg.includes('дозвіл') ? (
+                  <AlertCircle size={14} className="shrink-0 mt-0.5 text-amber-400" />
+                ) : (
+                  <Check size={14} className="shrink-0 mt-0.5 text-apple-green" />
+                )}
+                <div className="space-y-1">
+                  <div>{syncStatusMsg}</div>
+                  {syncStatusMsg.includes('Google Drive API') && (
+                    <a
+                      href="https://console.cloud.google.com/apis/library/drive.googleapis.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs text-blue-400 underline font-semibold hover:text-blue-300 pt-0.5"
+                    >
+                      <span>Увімкнути Google Drive API в 1 клік</span>
+                      <ExternalLink size={12} />
+                    </a>
+                  )}
+                </div>
+              </div>
+            </div>
           )}
         </div>
 

@@ -158,6 +158,17 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         const msg = err?.error?.message || `Помилка Gemini API (${model}): ${res.status}`;
+
+        // Rate limit (429) -> швидка зупинка з дружнім поясненням
+        if (res.status === 429 || msg.toLowerCase().includes('resource_exhausted')) {
+          throw new Error('Перевищено хвилинний ліміт запитів Gemini (Rate Limit). Зачекайте 15-20 секунд та повторіть запит.');
+        }
+
+        // Недійсний ключ (400) -> швидка зупинка
+        if (res.status === 400 && msg.toLowerCase().includes('api_key_invalid')) {
+          throw new Error('Недійсний Gemini API ключ. Перевірте правильність копіювання ключа в Профілі.');
+        }
+
         throw new Error(msg);
       }
 
@@ -169,6 +180,12 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
       activeModelCache = { version, model };
       return text;
     } catch (err: any) {
+      if (
+        err.message && 
+        (err.message.includes('Rate Limit') || err.message.includes('Недійсний Gemini API ключ'))
+      ) {
+        throw err;
+      }
       console.warn(`Gemini (${model} ${version}) failed, trying next candidate:`, err);
       lastError = err;
     }
@@ -320,42 +337,70 @@ export async function sendNutritionChat(
   apiKey: string
 ): Promise<string> {
   const systemInstruction = `
-Ти — персональний преміум ШІ-нутриціолог, спортивний дієтолог і фітнес-коуч у додатку "SportMaster".
+Ти — персональний преміум ШІ-нутриціолог, спортивний дієтолог і фітнес-коуч у додатку "SportMaster AI".
 Твоє ім'я — Gemini Sport Coach.
-Ти завжди відповідаєш українською мовою, доброзичливо, професійно, структуровано, лаконічно і мотивуюче (використовуй емодзі, списки де доречно).
+Ти завжди відповідаєш українською мовою, доброзичливо, професійно, структуровано, лаконічно і мотивуюче.
+
+КРИТИЧНО ВАЖЛИВІ ПРАВИЛА:
+1. Завжди завершуй думку та речення повністю! Ніколи не обривай відповідь на півслові або на середині речення.
+2. Використовуй списки з маркерами (•) або номерами та виділяй головне жирним шрифтом (**жирний текст**).
+3. Враховуй актуальні дані користувача та його прогрес на сьогодні (поточну вагу, ціль, спожиті калорії та БЖВ, дефіцит або залишок).
+4. Якщо користувач питає пораду щодо їжі, запропонуй конкретні смачні страви з приблизними грамами та калорійністю.
 
 ДАНІ ПРО КОРИСТУВАЧА ТА ЙОГО ДЕННИЙ ПРОГРЕС:
 ${userContext}
-
-Враховуй ці дані у відповідях! Наприклад, якщо користувач питає "Що з'їсти на вечерю?", поглянь скільки калорій та білків у нього залишилось на сьогодні, і запропонуй конкретні варіанти страв із приблизними грамами та ккал.
 `.trim();
 
-  // Convert history to Gemini format (limit to last 10 messages for performance and speed)
+  // Беремо останні повідомлення, відкидаючи системні помилки та статичні привітання
   const recentMessages = history.slice(-10);
-  const contents = [
-    {
-      role: 'user',
-      parts: [{ text: systemInstruction }]
-    },
-    {
-      role: 'model',
-      parts: [{ text: 'Зрозумів! Я готовий допомагати вам досягати ідеальної фізичної форми та збалансованого харчування.' }]
-    },
-    ...recentMessages.map((m) => ({
-      role: m.role === 'user' ? 'user' : 'model',
-      parts: [{ text: m.content }]
-    })),
-    {
-      role: 'user',
-      parts: [{ text: newMessage }]
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+
+  for (const m of recentMessages) {
+    const text = m.content?.trim();
+    if (!text) continue;
+    // Пропускаємо системні сповіщення про помилки та стартове привітання
+    if (
+      m.id === 'welcome' ||
+      text.includes('Вибачте, виникла помилка') ||
+      text.includes('Gemini API')
+    ) {
+      continue;
     }
-  ];
+
+    const role: 'user' | 'model' = m.role === 'user' ? 'user' : 'model';
+
+    // Запобігаємо двом підряд повідомленням однієї ролі (вимога Gemini API: чергування user -> model)
+    if (contents.length > 0 && contents[contents.length - 1].role === role) {
+      contents[contents.length - 1].parts[0].text += `\n\n${text}`;
+    } else {
+      contents.push({ role, parts: [{ text }] });
+    }
+  }
+
+  // Діалог у Gemini API обов'язково має починатися з черги 'user'
+  if (contents.length > 0 && contents[0].role === 'model') {
+    contents.shift();
+  }
+
+  // Додаємо нове запитання користувача (якщо попередня черга була user — об'єднуємо, інакше додаємо нову)
+  const cleanNewMsg = newMessage.trim();
+  if (contents.length > 0 && contents[contents.length - 1].role === 'user') {
+    contents[contents.length - 1].parts[0].text += `\n\n${cleanNewMsg}`;
+  } else {
+    contents.push({
+      role: 'user',
+      parts: [{ text: cleanNewMsg }]
+    });
+  }
 
   const body = {
+    systemInstruction: {
+      parts: [{ text: systemInstruction }]
+    },
     contents,
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 1000
+      maxOutputTokens: 4096
     }
   };
 

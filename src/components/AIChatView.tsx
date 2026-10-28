@@ -13,6 +13,108 @@ interface AIChatViewProps {
   onOpenSettings: () => void;
 }
 
+function renderInlineFormatting(text: string): React.ReactNode {
+  const parts: React.ReactNode[] = [];
+  const regex = /(\*\*([^*]+)\*\*|\*([^*]+)\*|`([^`]+)`)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push(text.substring(lastIndex, match.index));
+    }
+    if (match[2]) {
+      // **bold**
+      parts.push(
+        <strong key={match.index} className="font-bold text-white tracking-wide">
+          {match[2]}
+        </strong>
+      );
+    } else if (match[3]) {
+      // *italic*
+      parts.push(
+        <em key={match.index} className="italic text-white/80">
+          {match[3]}
+        </em>
+      );
+    } else if (match[4]) {
+      // `code`
+      parts.push(
+        <code key={match.index} className="bg-white/10 px-1 py-0.5 rounded text-[11px] font-mono text-apple-green">
+          {match[4]}
+        </code>
+      );
+    }
+    lastIndex = regex.lastIndex;
+  }
+
+  if (lastIndex < text.length) {
+    parts.push(text.substring(lastIndex));
+  }
+
+  return parts.length > 0 ? parts : text;
+}
+
+const FormattedMessage: React.FC<{ content: string; isUser?: boolean }> = ({ content, isUser }) => {
+  if (isUser) {
+    return <div className="whitespace-pre-wrap break-words">{content}</div>;
+  }
+
+  const lines = content.split('\n');
+
+  return (
+    <div className="space-y-1.5 text-xs sm:text-sm leading-relaxed">
+      {lines.map((line, idx) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return <div key={idx} className="h-1" />;
+        }
+
+        // Заголовки розділів (### або ##)
+        if (trimmed.startsWith('### ') || trimmed.startsWith('## ')) {
+          const headingText = trimmed.replace(/^#{2,3}\s+/, '');
+          return (
+            <div key={idx} className="font-bold text-apple-green text-xs sm:text-sm pt-1.5 pb-0.5">
+              {renderInlineFormatting(headingText)}
+            </div>
+          );
+        }
+
+        // Марковані списки (- або * або •)
+        if (/^[-*•]\s+/.test(trimmed)) {
+          const itemText = trimmed.replace(/^[-*•]\s+/, '');
+          return (
+            <div key={idx} className="flex items-start gap-2 pl-1 py-0.5">
+              <span className="text-apple-green font-bold text-sm leading-4 select-none shrink-0">•</span>
+              <span className="flex-1 text-white/90">{renderInlineFormatting(itemText)}</span>
+            </div>
+          );
+        }
+
+        // Нумеровані списки (1. 2. 3.)
+        const numMatch = trimmed.match(/^(\d+)\.\s+(.*)$/);
+        if (numMatch) {
+          return (
+            <div key={idx} className="flex items-start gap-2 pl-1 py-0.5">
+              <span className="text-apple-green font-semibold text-xs leading-5 shrink-0 select-none">
+                {numMatch[1]}.
+              </span>
+              <span className="flex-1 text-white/90">{renderInlineFormatting(numMatch[2])}</span>
+            </div>
+          );
+        }
+
+        // Звичайний текст
+        return (
+          <div key={idx} className="text-white/90">
+            {renderInlineFormatting(line)}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 export const AIChatView: React.FC<AIChatViewProps> = ({
   profile,
   dayLog,
@@ -76,11 +178,7 @@ export const AIChatView: React.FC<AIChatViewProps> = ({
       onSendMessage('assistant', answer);
     } catch (err: any) {
       console.error('Chat error:', err);
-      setErrorMessage(err.message || 'Не вдалося отримати відповідь від Gemini.');
-      onSendMessage(
-        'assistant',
-        'Вибачте, виникла помилка з\'єднання з Gemini API. Перевірте підключення та валідність вашого ключа в налаштуваннях.'
-      );
+      setErrorMessage(err.message || 'Не вдалося отримати відповідь від Gemini. Спробуйте ще раз.');
     } finally {
       setIsTyping(false);
     }
@@ -174,15 +272,15 @@ export const AIChatView: React.FC<AIChatViewProps> = ({
               )}
 
               <div
-                className={`max-w-[82%] rounded-2xl px-4 py-2.5 text-xs sm:text-sm leading-relaxed ${
+                className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-xs sm:text-sm leading-relaxed ${
                   isUser
                     ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-br-sm shadow-md shadow-purple-600/20'
                     : 'bg-[#1C1C1E] border border-white/10 text-white/95 rounded-bl-sm shadow-md'
                 }`}
               >
-                <div className="whitespace-pre-wrap break-words">{msg.content}</div>
+                <FormattedMessage content={msg.content} isUser={isUser} />
                 <div
-                  className={`text-[9px] mt-1 text-right ${
+                  className={`text-[9px] mt-1.5 text-right ${
                     isUser ? 'text-white/60' : 'text-apple-subtext'
                   }`}
                 >

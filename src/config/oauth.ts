@@ -71,7 +71,7 @@ export const OAUTH_CONFIG = {
       redirect_uri: this.getRedirectUri(),
       response_type: 'token',
       scope: this.scopes.join(' '),
-      prompt: 'select_account' // Примусово відкриває сторінку вибору акаунта
+      prompt: 'consent select_account' // Примусово запитує згоду користувача на роботу з Google Диском
     });
 
     return `${this.authEndpoint}?${params.toString()}`;
