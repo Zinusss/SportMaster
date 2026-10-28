@@ -6,11 +6,12 @@ import {
 import { AuthUser } from '../types/auth';
 import { 
   loginWithGoogleData, 
-  getGoogleClientId,
+  getGoogleClientId, 
   getGoogleOAuthRedirectUrl,
   loginOrRegisterWithEmail,
   loginAsGuest
 } from '../services/auth';
+import { saveGoogleDriveToken } from '../services/googleDriveSync';
 
 interface AuthViewProps {
   onSuccess: (user: AuthUser) => void;
@@ -55,10 +56,12 @@ export const AuthView: React.FC<AuthViewProps> = ({ onSuccess }) => {
     if (hash.includes('access_token=')) {
       const hashParams = new URLSearchParams(hash.substring(1));
       const accessToken = hashParams.get('access_token');
+      const expiresIn = parseInt(hashParams.get('expires_in') || '3600', 10);
 
       if (accessToken) {
         setIsLoading(true);
         setSuccessMessage('Отримано відповідь від Google. Завантаження вашого профілю...');
+        saveGoogleDriveToken(accessToken, expiresIn);
 
         // Fetch verified userinfo from Google's servers
         fetch('https://www.googleapis.com/oauth2/v3/userinfo', {

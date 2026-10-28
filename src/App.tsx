@@ -33,7 +33,9 @@ export const App: React.FC = () => {
     exportData,
     importData,
     resetAllData,
-    isCloudSyncing
+    isCloudSyncing,
+    lastGoogleSync,
+    syncNowWithGoogleDrive
   } = useAppData(currentUser);
 
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
@@ -114,6 +116,8 @@ export const App: React.FC = () => {
             onImportData={importData}
             onResetData={resetAllData}
             isCloudSyncing={isCloudSyncing}
+            lastGoogleSync={lastGoogleSync}
+            onSyncGoogleDrive={syncNowWithGoogleDrive}
           />
         )}
       </main>

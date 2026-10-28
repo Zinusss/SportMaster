@@ -9,6 +9,8 @@ import { AuthUser } from '../types/auth';
 import { ACTIVITY_LABELS, GOAL_LABELS } from '../utils/nutrition';
 import { testGeminiKey } from '../services/gemini';
 import { getSavedFirebaseConfig, saveFirebaseConfig, syncDataToFirestore } from '../services/firebase';
+import { isGoogleDriveConnected } from '../services/googleDriveSync';
+import { getGoogleOAuthRedirectUrl } from '../services/auth';
 
 interface ProfileViewProps {
   currentUser: AuthUser | null;
@@ -22,6 +24,8 @@ interface ProfileViewProps {
   onImportData: (jsonStr: string) => { success: boolean; error?: string };
   onResetData: () => void;
   isCloudSyncing?: boolean;
+  lastGoogleSync?: string | null;
+  onSyncGoogleDrive?: () => Promise<{ success: boolean; message: string }>;
 }
 
 export const ProfileView: React.FC<ProfileViewProps> = ({
@@ -35,7 +39,9 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onExportData,
   onImportData,
   onResetData,
-  isCloudSyncing = false
+  isCloudSyncing = false,
+  lastGoogleSync = null,
+  onSyncGoogleDrive
 }) => {
   // Local edit states
   const [apiKeyInput, setApiKeyInput] = useState(profile.geminiApiKey || '');
@@ -120,18 +126,23 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     if (!currentUser) return;
     setIsManualSyncing(true);
     setSyncStatusMsg(null);
-    const success = await syncDataToFirestore(currentUser.uid, {
-      profile,
-      days,
-      chat: chatHistory
-    });
-    setIsManualSyncing(false);
-    if (success) {
-      setSyncStatusMsg('Всі дані та прогрес успішно синхронізовано з хмарою!');
+
+    let msg = '';
+    if (currentUser.provider === 'google' && onSyncGoogleDrive) {
+      const res = await onSyncGoogleDrive();
+      msg = res.message;
     } else {
-      setSyncStatusMsg('Дані збережено локально на цьому пристрої.');
+      const success = await syncDataToFirestore(currentUser.uid, {
+        profile,
+        days,
+        chat: chatHistory
+      });
+      msg = success ? 'Всі дані та прогрес синхронізовано з хмарою!' : 'Дані збережено локально на цьому пристрої.';
     }
-    setTimeout(() => setSyncStatusMsg(null), 3500);
+
+    setIsManualSyncing(false);
+    setSyncStatusMsg(msg);
+    setTimeout(() => setSyncStatusMsg(null), 4000);
   };
 
   const handleSaveFirebaseConfig = () => {
@@ -199,38 +210,78 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         </div>
 
         {/* Cloud Sync & Storage status */}
-        <div className="bg-black/40 p-3.5 rounded-2xl border border-white/5 space-y-2">
+        <div className="bg-black/40 p-4 rounded-2xl border border-white/5 space-y-3">
           <div className="flex items-center justify-between text-xs">
-            <span className="text-white/70 flex items-center gap-1.5">
+            <span className="text-white/80 font-semibold flex items-center gap-1.5">
               <Cloud size={14} className={isCloudSyncing ? 'text-apple-green animate-pulse' : 'text-cyan-400'} />
-              <span>Збереження прогресу</span>
+              <span>
+                {currentUser?.provider === 'google' ? 'Google Диск (Безкоштовна хмара)' : 'Збереження прогресу'}
+              </span>
             </span>
-            <span className="text-[11px] font-semibold text-apple-green flex items-center gap-1">
-              <ShieldCheck size={13} />
-              <span>Активно для {currentUser?.email?.split('@')[0]}</span>
+            {currentUser?.provider === 'google' ? (
+              isGoogleDriveConnected() ? (
+                <span className="text-[10px] font-semibold text-apple-green flex items-center gap-1 bg-apple-green/10 px-2 py-0.5 rounded-full border border-apple-green/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-apple-green animate-pulse" />
+                  Прив'язано до Google
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
+                  Оновіть сесію
+                </span>
+              )
+            ) : (
+              <span className="text-[11px] font-semibold text-apple-green flex items-center gap-1">
+                <ShieldCheck size={13} />
+                <span>{currentUser?.email?.split('@')[0]}</span>
+              </span>
+            )}
+          </div>
+
+          <p className="text-[11px] text-white/60 leading-relaxed">
+            {currentUser?.provider === 'google'
+              ? 'Ваші записи, вага, калорії та чат прив\'язані безпосередньо до вашого Google Акаунту (папка AppData). Сторонні веб-сервери та хостинги не потрібні!'
+              : 'Дані зберігаються на вашому пристрої. Для хмарної прив\'язки без серверів увійдіть через Google.'}
+          </p>
+
+          <div className="flex items-center justify-between text-[10px] text-white/40 pt-0.5">
+            <span>
+              {lastGoogleSync ? `Останнє збереження: ${lastGoogleSync}` : 'Синхронізується автоматично при змінах'}
             </span>
           </div>
 
           <div className="flex gap-2 pt-1">
-            <button
-              onClick={handleManualSync}
-              disabled={isManualSyncing}
-              className="flex-1 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-[11px] font-semibold flex items-center justify-center gap-1 transition"
-            >
-              <RefreshCw size={12} className={isManualSyncing ? 'animate-spin' : ''} />
-              <span>Синхронізувати зараз</span>
-            </button>
+            {currentUser?.provider === 'google' && !isGoogleDriveConnected() ? (
+              <button
+                onClick={() => {
+                  window.location.href = getGoogleOAuthRedirectUrl();
+                }}
+                className="flex-1 py-2 rounded-xl bg-apple-green text-black text-xs font-bold flex items-center justify-center gap-1.5 transition shadow"
+              >
+                <span>Оновити сесію Google</span>
+              </button>
+            ) : (
+              <button
+                onClick={handleManualSync}
+                disabled={isManualSyncing || isCloudSyncing}
+                className="flex-1 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-white text-[11px] font-semibold flex items-center justify-center gap-1 transition"
+              >
+                <RefreshCw size={12} className={isManualSyncing || isCloudSyncing ? 'animate-spin' : ''} />
+                <span>Зберегти на Google Диск</span>
+              </button>
+            )}
+
             <button
               onClick={() => setShowFirebaseModal(true)}
-              className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-[11px] flex items-center gap-1 transition"
+              className="px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-white/60 hover:text-white text-[11px] flex items-center gap-1 transition"
+              title="Додаткові налаштування Firebase"
             >
               <Database size={12} />
-              <span>Хмара</span>
+              <span>Firestore</span>
             </button>
           </div>
 
           {syncStatusMsg && (
-            <p className="text-[10px] text-apple-green pt-1 animate-fade-in">{syncStatusMsg}</p>
+            <p className="text-[10px] text-apple-green pt-1 animate-fade-in font-medium">{syncStatusMsg}</p>
           )}
         </div>
 

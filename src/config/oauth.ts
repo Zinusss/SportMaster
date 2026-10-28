@@ -24,8 +24,13 @@ export const OAUTH_CONFIG = {
   // Ендпоінт для отримання даних користувача
   userinfoEndpoint: 'https://www.googleapis.com/oauth2/v3/userinfo',
 
-  // Необхідні дозволи для профілю
-  scopes: ['email', 'profile', 'openid'],
+  // Необхідні дозволи для профілю та синхронізації у приховану папку Google Диску
+  scopes: [
+    'openid',
+    'email',
+    'profile',
+    'https://www.googleapis.com/auth/drive.appdata'
+  ],
 
   /**
    * Отримати Google Client ID:

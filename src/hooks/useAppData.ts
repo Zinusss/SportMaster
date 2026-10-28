@@ -3,6 +3,12 @@ import { ChatMessage, DayLog, FoodEntry, UserProfile } from '../types';
 import { AuthUser } from '../types/auth';
 import { calculateNutritionTargets, getTodayKey } from '../utils/nutrition';
 import { loadDataFromFirestore, syncDataToFirestore } from '../services/firebase';
+import { 
+  loadDataFromGoogleDrive, 
+  syncDataToGoogleDrive, 
+  getLastGoogleDriveSyncTime,
+  isGoogleDriveConnected 
+} from '../services/googleDriveSync';
 
 const getDefaultProfile = (user?: AuthUser | null): UserProfile => {
   const initialTargets = calculateNutritionTargets('male', 26, 75, 178, 'moderate', 'lose_weight');
@@ -69,6 +75,7 @@ export function useAppData(currentUser: AuthUser | null) {
 
   const [currentDate, setCurrentDate] = useState<string>(getTodayKey());
   const [isCloudSyncing, setIsCloudSyncing] = useState<boolean>(false);
+  const [lastGoogleSync, setLastGoogleSync] = useState<string | null>(() => getLastGoogleDriveSyncTime());
   const syncTimeoutRef = useRef<any>(null);
 
   // Reload data when user changes
@@ -97,6 +104,31 @@ export function useAppData(currentUser: AuthUser | null) {
       }
     } catch (e) {
       console.error('Failed to switch user data', e);
+    }
+
+    // Background load from Google Drive if signed in with Google
+    if (currentUser.provider === 'google') {
+      loadDataFromGoogleDrive().then((cloudData) => {
+        if (cloudData) {
+          if (cloudData.profile) {
+            setProfile((prev) => ({
+              ...cloudData.profile,
+              geminiApiKey: prev.geminiApiKey || cloudData.profile.geminiApiKey || ''
+            }));
+          }
+          if (cloudData.days) {
+            setDays((prev) => ({
+              ...cloudData.days,
+              ...prev
+            }));
+          }
+          if (cloudData.chat && Array.isArray(cloudData.chat) && cloudData.chat.length > 0) {
+            setChatHistory(cloudData.chat);
+          }
+          const time = new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+          setLastGoogleSync(time);
+        }
+      }).catch((e) => console.warn('Google Drive cloud load error:', e));
     }
 
     // Try background cloud fetch if Firestore is active
@@ -145,11 +177,31 @@ export function useAppData(currentUser: AuthUser | null) {
     if (syncTimeoutRef.current) clearTimeout(syncTimeoutRef.current);
     syncTimeoutRef.current = setTimeout(async () => {
       setIsCloudSyncing(true);
+
+      // 1. Google Drive AppData Sync (Zero backend, ties to Google Account)
+      if (currentUser.provider === 'google' && isGoogleDriveConnected()) {
+        try {
+          const res = await syncDataToGoogleDrive({
+            profile,
+            days,
+            chat: chatHistory
+          });
+          if (res.success) {
+            const time = new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+            setLastGoogleSync(time);
+          }
+        } catch (e) {
+          console.warn('Google Drive auto-sync error:', e);
+        }
+      }
+
+      // 2. Firestore Sync (if user configured Firebase)
       await syncDataToFirestore(currentUser.uid, {
         profile,
         days,
         chat: chatHistory
       });
+
       setIsCloudSyncing(false);
     }, 2000);
   };
@@ -336,6 +388,26 @@ export function useAppData(currentUser: AuthUser | null) {
     }
   };
 
+  const syncNowWithGoogleDrive = async (): Promise<{ success: boolean; message: string }> => {
+    if (!currentUser) {
+      return { success: false, message: 'Увійдіть в акаунт для збереження' };
+    }
+    setIsCloudSyncing(true);
+    const res = await syncDataToGoogleDrive({
+      profile,
+      days,
+      chat: chatHistory
+    });
+    setIsCloudSyncing(false);
+    if (res.success) {
+      const timeStr = new Date().toLocaleTimeString('uk-UA', { hour: '2-digit', minute: '2-digit' });
+      setLastGoogleSync(timeStr);
+      return { success: true, message: `Успішно збережено в Google Диск о ${timeStr}` };
+    } else {
+      return { success: false, message: res.error || 'Помилка збереження' };
+    }
+  };
+
   const resetAllData = () => {
     localStorage.removeItem(profileKey);
     localStorage.removeItem(daysKey);
@@ -363,6 +435,8 @@ export function useAppData(currentUser: AuthUser | null) {
     exportData,
     importData,
     resetAllData,
-    isCloudSyncing
+    isCloudSyncing,
+    lastGoogleSync,
+    syncNowWithGoogleDrive
   };
 }

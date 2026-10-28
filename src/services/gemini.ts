@@ -2,12 +2,61 @@ import { ChatMessage, FoodAnalysisResult } from '../types';
 
 // Список моделей і версій API у порядку пріоритету
 const MODEL_CANDIDATES = [
+  { version: 'v1beta', model: 'gemini-2.5-flash' },
   { version: 'v1beta', model: 'gemini-2.0-flash' },
   { version: 'v1beta', model: 'gemini-1.5-flash' },
   { version: 'v1', model: 'gemini-1.5-flash' },
   { version: 'v1beta', model: 'gemini-1.5-flash-latest' },
   { version: 'v1beta', model: 'gemini-1.5-pro' }
 ];
+
+let activeModelCache: { version: string; model: string } | null = null;
+
+/**
+ * Динамічно запитує у Google список доступних моделей для конкретного API-ключа користувача.
+ * Це гарантує, що запит піде до реально існуючої моделі та ніколи не видасть 404 Not Found.
+ */
+async function discoverSupportedModel(apiKey: string): Promise<{ version: string; model: string } | null> {
+  if (activeModelCache) return activeModelCache;
+
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}`);
+    if (res.ok) {
+      const data = await res.json();
+      const models: Array<{ name: string; supportedGenerationMethods?: string[] }> = data.models || [];
+      const contentModels = models.filter((m) =>
+        m.supportedGenerationMethods?.includes('generateContent')
+      );
+
+      const priorityOrder = [
+        'gemini-2.5-flash',
+        'gemini-2.0-flash',
+        'gemini-1.5-flash',
+        'gemini-1.5-flash-latest',
+        'gemini-1.5-pro',
+        'gemini-pro'
+      ];
+
+      for (const pref of priorityOrder) {
+        const found = contentModels.find((m) => m.name === `models/${pref}` || m.name.endsWith(`/${pref}`));
+        if (found) {
+          activeModelCache = { version: 'v1beta', model: found.name.replace(/^models\//, '') };
+          return activeModelCache;
+        }
+      }
+
+      // Якщо точних збігів немає, беремо будь-яку доступну модель з родини gemini
+      const fallback = contentModels.find((m) => m.name.toLowerCase().includes('gemini'));
+      if (fallback) {
+        activeModelCache = { version: 'v1beta', model: fallback.name.replace(/^models\//, '') };
+        return activeModelCache;
+      }
+    }
+  } catch (e) {
+    // У разі збою запиту списку - автоматично використовуємо статичний каскад
+  }
+  return null;
+}
 
 // Clean JSON helper that handles ```json fences and stray characters
 function extractJsonFromText(rawText: string): any {
@@ -29,9 +78,9 @@ function extractJsonFromText(rawText: string): any {
 }
 
 /**
- * Validates Gemini API Key with a lightweight ping across model candidates
+ * Validates Gemini API Key with dynamic discovery and ping across model candidates
  */
-export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
+export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; modelName?: string; error?: string }> {
   if (!apiKey || apiKey.trim().length < 10) {
     return { valid: false, error: 'Ключ API порожній або надто короткий' };
   }
@@ -39,7 +88,13 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; e
   const trimmedKey = apiKey.trim();
   let lastErrorMessage = '';
 
-  for (const { version, model } of MODEL_CANDIDATES) {
+  // 1. Спробуємо динамічно виявити підтримувані моделі для цього ключа
+  const discovered = await discoverSupportedModel(trimmedKey);
+  const candidates = discovered
+    ? [discovered, ...MODEL_CANDIDATES.filter((c) => c.model !== discovered.model)]
+    : MODEL_CANDIDATES;
+
+  for (const { version, model } of candidates) {
     try {
       const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${trimmedKey}`;
       const res = await fetch(url, {
@@ -52,7 +107,8 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; e
       });
 
       if (res.ok) {
-        return { valid: true };
+        activeModelCache = { version, model };
+        return { valid: true, modelName: model };
       }
 
       const errData = await res.json().catch(() => ({}));
@@ -78,13 +134,19 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; e
 }
 
 /**
- * Calls Gemini with automatic fallback across models and API versions
+ * Calls Gemini with dynamic model discovery and automatic fallback across models and API versions
  */
 async function callGemini(apiKey: string, body: any): Promise<string> {
   const trimmedKey = apiKey.trim();
   let lastError: any = null;
 
-  for (const { version, model } of MODEL_CANDIDATES) {
+  // Динамічно визначаємо робочу модель або беремо з кешу
+  const discovered = await discoverSupportedModel(trimmedKey);
+  const candidates = discovered
+    ? [discovered, ...MODEL_CANDIDATES.filter((c) => c.model !== discovered.model)]
+    : MODEL_CANDIDATES;
+
+  for (const { version, model } of candidates) {
     try {
       const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${trimmedKey}`;
       const res = await fetch(url, {
@@ -102,6 +164,9 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
       const data = await res.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) throw new Error('Порожня відповідь від моделі');
+
+      // Запам'ятовуємо успішну модель
+      activeModelCache = { version, model };
       return text;
     } catch (err: any) {
       console.warn(`Gemini (${model} ${version}) failed, trying next candidate:`, err);

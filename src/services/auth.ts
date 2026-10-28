@@ -1,5 +1,6 @@
 import { AuthUser, UserAccountCredentials } from '../types/auth';
 import { OAUTH_CONFIG } from '../config/oauth';
+import { clearGoogleDriveSession } from './googleDriveSync';
 
 const STORAGE_KEYS = {
   ACCOUNTS: 'sportmaster_auth_accounts_v4',
@@ -195,4 +196,5 @@ export async function loginWithGoogleData(googleProfile: {
 
 export function logoutUser() {
   saveCurrentSession(null);
+  clearGoogleDriveSession();
 }
