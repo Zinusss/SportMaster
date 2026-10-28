@@ -1,7 +1,13 @@
 import { ChatMessage, FoodAnalysisResult } from '../types';
 
-const PRIMARY_MODEL = 'gemini-2.0-flash';
-const FALLBACK_MODEL = 'gemini-1.5-flash';
+// Список моделей і версій API у порядку пріоритету
+const MODEL_CANDIDATES = [
+  { version: 'v1beta', model: 'gemini-2.0-flash' },
+  { version: 'v1beta', model: 'gemini-1.5-flash' },
+  { version: 'v1', model: 'gemini-1.5-flash' },
+  { version: 'v1beta', model: 'gemini-1.5-flash-latest' },
+  { version: 'v1beta', model: 'gemini-1.5-pro' }
+];
 
 // Clean JSON helper that handles ```json fences and stray characters
 function extractJsonFromText(rawText: string): any {
@@ -23,7 +29,7 @@ function extractJsonFromText(rawText: string): any {
 }
 
 /**
- * Validates Gemini API Key with a lightweight ping
+ * Validates Gemini API Key with a lightweight ping across model candidates
  */
 export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; error?: string }> {
   if (!apiKey || apiKey.trim().length < 10) {
@@ -31,41 +37,56 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; e
   }
 
   const trimmedKey = apiKey.trim();
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${FALLBACK_MODEL}:generateContent?key=${trimmedKey}`;
+  let lastErrorMessage = '';
 
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: 'Привіт, скажи Ок' }] }],
-        generationConfig: { maxOutputTokens: 10 }
-      })
-    });
+  for (const { version, model } of MODEL_CANDIDATES) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${trimmedKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'Ping' }] }],
+          generationConfig: { maxOutputTokens: 5 }
+        })
+      });
 
-    if (!res.ok) {
+      if (res.ok) {
+        return { valid: true };
+      }
+
       const errData = await res.json().catch(() => ({}));
-      const message = errData?.error?.message || `Помилка ${res.status}: ${res.statusText}`;
-      return { valid: false, error: message };
-    }
+      lastErrorMessage = errData?.error?.message || `HTTP ${res.status}`;
 
-    return { valid: true };
-  } catch (err: any) {
-    return { valid: false, error: err.message || 'Не вдалося з\'єднатися з серверами Google' };
+      // If it's an invalid key (400 / 403), no need to try other models
+      if (res.status === 400 && lastErrorMessage.toLowerCase().includes('api_key_invalid')) {
+        return { valid: false, error: 'Недійсний Gemini API ключ. Перевірте правильність копіювання.' };
+      }
+    } catch (e: any) {
+      lastErrorMessage = e.message || 'Помилка мережі';
+    }
   }
+
+  if (lastErrorMessage.includes('not found') || lastErrorMessage.includes('404')) {
+    return {
+      valid: false,
+      error: 'Модель Gemini не знайдена для цього ключа. Переконайтеся, що ключ створено на https://aistudio.google.com/app/apikey (Google AI Studio) або в Google Cloud увімкнено Generative Language API.'
+    };
+  }
+
+  return { valid: false, error: lastErrorMessage || 'Не вдалося перевірити ключ Gemini' };
 }
 
 /**
- * Calls Gemini with fallback from 2.0 to 1.5 if needed
+ * Calls Gemini with automatic fallback across models and API versions
  */
 async function callGemini(apiKey: string, body: any): Promise<string> {
   const trimmedKey = apiKey.trim();
-  const models = [PRIMARY_MODEL, FALLBACK_MODEL];
   let lastError: any = null;
 
-  for (const model of models) {
+  for (const { version, model } of MODEL_CANDIDATES) {
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${trimmedKey}`;
+      const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${trimmedKey}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -74,7 +95,8 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error?.message || `Помилка Gemini API (${model}): ${res.status}`);
+        const msg = err?.error?.message || `Помилка Gemini API (${model}): ${res.status}`;
+        throw new Error(msg);
       }
 
       const data = await res.json();
@@ -82,9 +104,16 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
       if (!text) throw new Error('Порожня відповідь від моделі');
       return text;
     } catch (err: any) {
-      console.warn(`Gemini model ${model} failed, trying next if available:`, err);
+      console.warn(`Gemini (${model} ${version}) failed, trying next candidate:`, err);
       lastError = err;
     }
+  }
+
+  const rawMsg = lastError?.message || '';
+  if (rawMsg.includes('not found') || rawMsg.includes('404')) {
+    throw new Error(
+      'Модель Gemini не активована для вашого ключа. Створіть новий ключ на https://aistudio.google.com/app/apikey (там моделі увімкнені за замовчуванням).'
+    );
   }
 
   throw lastError || new Error('Не вдалося виконати запит до Gemini');
