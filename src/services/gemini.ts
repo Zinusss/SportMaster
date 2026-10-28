@@ -1,63 +1,88 @@
 import { ChatMessage, FoodAnalysisResult } from '../types';
 
-// Список моделей і версій API у порядку пріоритету (спочатку моделі з найвищою квотою 15 RPM / 1500 RPD)
-const MODEL_CANDIDATES = [
-  { version: 'v1beta', model: 'gemini-1.5-flash' },
-  { version: 'v1beta', model: 'gemini-2.0-flash' },
-  { version: 'v1beta', model: 'gemini-1.5-flash-8b' },
-  { version: 'v1', model: 'gemini-1.5-flash' },
-  { version: 'v1beta', model: 'gemini-2.0-flash-lite-preview-02-05' },
-  { version: 'v1beta', model: 'gemini-1.5-pro' },
-  { version: 'v1beta', model: 'gemini-2.5-flash' }
+// Список моделей за замовчуванням у порядку пріоритету (найвищі ліміти 15 RPM / 1500 RPD)
+const FALLBACK_MODEL_CANDIDATES = [
+  'gemini-1.5-flash',
+  'gemini-2.0-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-2.0-flash-lite-preview-02-05',
+  'gemini-1.5-pro',
+  'gemini-2.5-flash'
 ];
 
-let activeModelCache: { version: string; model: string } | null = null;
+interface ActiveSession {
+  apiKey: string;
+  activeModel: string;
+  candidateModels: string[];
+}
+
+let activeSession: ActiveSession | null = null;
 
 /**
- * Динамічно запитує у Google список доступних моделей для конкретного API-ключа користувача.
- * Пріоритет віддається стабільним моделям з максимальною квотою запитів (15 RPM).
+ * Перекладає сирі системні помилки Google Gemini на зрозумілу українську мову з конкретними інструкціями
  */
-async function discoverSupportedModel(apiKey: string): Promise<{ version: string; model: string } | null> {
-  if (activeModelCache) return activeModelCache;
+export function translateGeminiError(rawMsg: string): string {
+  const msg = rawMsg || '';
 
+  if (msg.includes('API key not valid') || msg.toLowerCase().includes('api_key_invalid')) {
+    return 'Недійсний Gemini API ключ. Будь ласка, перевірте правильність копіювання в Профілі (без зайвих пробілів).';
+  }
+
+  if (
+    msg.includes('Generative Language API has not been used') ||
+    msg.includes('is disabled') ||
+    msg.includes('it is disabled')
+  ) {
+    const projectMatch = msg.match(/project (\d+)/i);
+    const projectId = projectMatch ? projectMatch[1] : '';
+    const link = projectId 
+      ? `https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com?project=${projectId}`
+      : 'https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com';
+
+    return `У вашому Google Cloud проєкті вимкнено Generative Language API. Увімкніть його за посиланням: ${link} (натисніть синю кнопку «Увімкнути / Enable»).`;
+  }
+
+  if (msg.toLowerCase().includes('user location is not supported')) {
+    return 'Google Gemini API блокує запити з вашого поточного регіону чи мережі. Спробуйте ввімкнути VPN.';
+  }
+
+  if (msg.toLowerCase().includes('resource_exhausted') || msg.toLowerCase().includes('quota') || msg.includes('429')) {
+    return 'Перевищено хвилинний ліміт безкоштовних запитів Google Gemini. Зачекайте 15–20 секунд для скидання ліміту.';
+  }
+
+  if (msg.includes('API key restrictions') || msg.includes('blocked')) {
+    return 'Цей API ключ має обмеження домену/IP в Google Cloud. Зніміть обмеження в Credentials.';
+  }
+
+  if (msg.includes('not found') || msg.includes('404')) {
+    return 'Модель не знайдена для цього проєкту. Створіть новий ключ у Google AI Studio (https://aistudio.google.com/app/apikey) натиснувши «Create API key in new project» або ввімкніть Generative Language API у вашому проєкті.';
+  }
+
+  return msg;
+}
+
+/**
+ * Запитує у Google точний список доступних моделей для конкретного API-ключа
+ */
+async function fetchAvailableModels(apiKey: string): Promise<{ models: string[]; error?: string }> {
   try {
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey.trim()}`);
-    if (res.ok) {
-      const data = await res.json();
-      const models: Array<{ name: string; supportedGenerationMethods?: string[] }> = data.models || [];
-      const contentModels = models.filter((m) =>
-        m.supportedGenerationMethods?.includes('generateContent')
-      );
+    const data = await res.json().catch(() => ({}));
 
-      const priorityOrder = [
-        'gemini-1.5-flash',
-        'gemini-2.0-flash',
-        'gemini-1.5-flash-8b',
-        'gemini-2.0-flash-lite-preview-02-05',
-        'gemini-1.5-pro',
-        'gemini-2.5-flash',
-        'gemini-pro'
-      ];
-
-      for (const pref of priorityOrder) {
-        const found = contentModels.find((m) => m.name === `models/${pref}` || m.name.endsWith(`/${pref}`));
-        if (found) {
-          activeModelCache = { version: 'v1beta', model: found.name.replace(/^models\//, '') };
-          return activeModelCache;
-        }
-      }
-
-      // Якщо точних збігів немає, беремо будь-яку доступну модель з родини gemini
-      const fallback = contentModels.find((m) => m.name.toLowerCase().includes('gemini'));
-      if (fallback) {
-        activeModelCache = { version: 'v1beta', model: fallback.name.replace(/^models\//, '') };
-        return activeModelCache;
-      }
+    if (!res.ok) {
+      const errMsg = data?.error?.message || `HTTP ${res.status}`;
+      return { models: [], error: errMsg };
     }
-  } catch (e) {
-    // У разі збою запиту списку - автоматично використовуємо статичний каскад
+
+    const rawList: Array<{ name: string; supportedGenerationMethods?: string[] }> = data.models || [];
+    const contentModels = rawList
+      .filter((m) => m.supportedGenerationMethods?.includes('generateContent'))
+      .map((m) => m.name.replace(/^models\//, ''));
+
+    return { models: contentModels };
+  } catch (e: any) {
+    return { models: [], error: e.message || 'Помилка мережі' };
   }
-  return null;
 }
 
 // Clean JSON helper that handles ```json fences and stray characters
@@ -88,18 +113,38 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; m
   }
 
   const trimmedKey = apiKey.trim();
-  let lastErrorMessage = '';
-  let rateLimitCount = 0;
 
-  // 1. Спробуємо динамічно виявити підтримувані моделі для цього ключа
-  const discovered = await discoverSupportedModel(trimmedKey);
-  const candidates = discovered
-    ? [discovered, ...MODEL_CANDIDATES.filter((c) => c.model !== discovered.model)]
-    : MODEL_CANDIDATES;
+  // 1. Опитуємо офіційний ендпоінт Google моделей
+  const discovery = await fetchAvailableModels(trimmedKey);
+  if (discovery.error) {
+    return {
+      valid: false,
+      error: translateGeminiError(discovery.error)
+    };
+  }
 
-  for (const { version, model } of candidates) {
+  // 2. Складаємо впорядкований список доступних моделей
+  let candidateModels: string[] = [];
+  if (discovery.models.length > 0) {
+    for (const p of FALLBACK_MODEL_CANDIDATES) {
+      if (discovery.models.includes(p)) {
+        candidateModels.push(p);
+      }
+    }
+    for (const m of discovery.models) {
+      if (!candidateModels.includes(m)) {
+        candidateModels.push(m);
+      }
+    }
+  } else {
+    candidateModels = [...FALLBACK_MODEL_CANDIDATES];
+  }
+
+  // 3. Тестуємо запит генерації
+  let lastError = '';
+  for (const model of candidateModels) {
     try {
-      const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${trimmedKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${trimmedKey}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -110,43 +155,27 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; m
       });
 
       if (res.ok) {
-        activeModelCache = { version, model };
+        activeSession = {
+          apiKey: trimmedKey,
+          activeModel: model,
+          candidateModels
+        };
         return { valid: true, modelName: model };
       }
 
       const errData = await res.json().catch(() => ({}));
-      lastErrorMessage = errData?.error?.message || `HTTP ${res.status}`;
+      lastError = errData?.error?.message || `HTTP ${res.status}`;
 
-      // Якщо модель перевантажена (429) — не зупиняємось, пробуємо іншу модель
-      if (res.status === 429 || lastErrorMessage.toLowerCase().includes('resource_exhausted')) {
-        rateLimitCount++;
+      // Якщо 429 — це означає що ключ правильний, просто черга тимчасово зайнята, переходимо далі
+      if (res.status === 429 || lastError.toLowerCase().includes('resource_exhausted')) {
         continue;
       }
-
-      // If it's an invalid key (400 / 403), no need to try other models
-      if (res.status === 400 && lastErrorMessage.toLowerCase().includes('api_key_invalid')) {
-        return { valid: false, error: 'Недійсний Gemini API ключ. Перевірте правильність копіювання.' };
-      }
     } catch (e: any) {
-      lastErrorMessage = e.message || 'Помилка мережі';
+      lastError = e.message || 'Помилка мережі';
     }
   }
 
-  if (rateLimitCount > 0 && rateLimitCount >= candidates.length) {
-    return {
-      valid: false,
-      error: 'Ключ дійсний, але досягнуто тимчасового ліміту запитів Google (Rate Limit). Зачекайте 20 секунд.'
-    };
-  }
-
-  if (lastErrorMessage.includes('not found') || lastErrorMessage.includes('404')) {
-    return {
-      valid: false,
-      error: 'Модель Gemini не знайдена для цього ключа. Переконайтеся, що ключ створено на https://aistudio.google.com/app/apikey (Google AI Studio) або в Google Cloud увімкнено Generative Language API.'
-    };
-  }
-
-  return { valid: false, error: lastErrorMessage || 'Не вдалося перевірити ключ Gemini' };
+  return { valid: false, error: translateGeminiError(lastError) };
 }
 
 /**
@@ -154,23 +183,51 @@ export async function testGeminiKey(apiKey: string): Promise<{ valid: boolean; m
  */
 async function callGemini(apiKey: string, body: any): Promise<string> {
   const trimmedKey = apiKey.trim();
-  let lastError: any = null;
-  const rateLimitedModels: string[] = [];
 
-  // Динамічно визначаємо список моделей, ставлячи активну першою
-  const discovered = await discoverSupportedModel(trimmedKey);
-  let candidates = [...MODEL_CANDIDATES];
-  if (discovered) {
-    candidates = [
-      discovered,
-      ...MODEL_CANDIDATES.filter((c) => c.model !== discovered.model || c.version !== discovered.version)
-    ];
+  // Скидаємо стару сесію, якщо введено інший ключ
+  if (activeSession && activeSession.apiKey !== trimmedKey) {
+    activeSession = null;
   }
 
-  for (let i = 0; i < candidates.length; i++) {
-    const { version, model } = candidates[i];
+  // 1. Якщо сесія ще не ініціалізована — відкриваємо її через автовизначення моделей
+  if (!activeSession) {
+    const discovery = await fetchAvailableModels(trimmedKey);
+    if (discovery.error) {
+      throw new Error(translateGeminiError(discovery.error));
+    }
+
+    let candidateModels: string[] = [];
+    if (discovery.models.length > 0) {
+      for (const p of FALLBACK_MODEL_CANDIDATES) {
+        if (discovery.models.includes(p)) candidateModels.push(p);
+      }
+      for (const m of discovery.models) {
+        if (!candidateModels.includes(m)) candidateModels.push(m);
+      }
+    } else {
+      candidateModels = [...FALLBACK_MODEL_CANDIDATES];
+    }
+
+    activeSession = {
+      apiKey: trimmedKey,
+      activeModel: candidateModels[0] || 'gemini-1.5-flash',
+      candidateModels
+    };
+  }
+
+  const candidateModels = activeSession.candidateModels;
+  let lastError: any = null;
+  let exhaustedCount = 0;
+
+  // Починаємо з поточної активної моделі
+  const orderedModels = [
+    activeSession.activeModel,
+    ...candidateModels.filter((m) => m !== activeSession?.activeModel)
+  ];
+
+  for (const model of orderedModels) {
     try {
-      const url = `https://generativelanguage.googleapis.com/${version}/models/${model}:generateContent?key=${trimmedKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${trimmedKey}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -181,26 +238,27 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
         const err = await res.json().catch(() => ({}));
         const msg = err?.error?.message || `Помилка Gemini API (${model}): ${res.status}`;
 
-        // Rate limit (429 / RESOURCE_EXHAUSTED / quota exceeded) -> АВТОМАТИЧНИЙ СВАП МОДЕЛІ!
+        // Rate limit (429 / RESOURCE_EXHAUSTED) -> АВТОМАТИЧНИЙ СВАП МОДЕЛІ!
         if (
           res.status === 429 || 
           msg.toLowerCase().includes('resource_exhausted') || 
           msg.toLowerCase().includes('quota')
         ) {
-          rateLimitedModels.push(model);
+          exhaustedCount++;
           console.warn(
-            `[SportMaster AI] Модель ${model} досягла ліміту (429). Автоматично свапаємо на наступну модель у списку...`
+            `[SportMaster AI] Модель ${model} досягла ліміту (429). Автоматично свапаємо на наступну модель...`
           );
-          // Скидаємо закешовану модель, щоб вона не блокувала наступні виклики
-          activeModelCache = null;
-          lastError = new Error(`Ліміт вичерпано на моделі ${model}`);
-          // Переходимо до наступної моделі в циклі!
+          lastError = new Error(msg);
           continue;
         }
 
-        // Недійсний ключ (400) -> тут свапати немає сенсу, ключ хибний
-        if (res.status === 400 && msg.toLowerCase().includes('api_key_invalid')) {
-          throw new Error('Недійсний Gemini API ключ. Перевірте правильність копіювання ключа в Профілі.');
+        // Якщо помилка стосується відключеного API або недійсного ключа — кидаємо негайно з поясненням
+        if (
+          msg.includes('Generative Language API has not been used') ||
+          msg.includes('is disabled') ||
+          msg.includes('API key not valid')
+        ) {
+          throw new Error(translateGeminiError(msg));
         }
 
         throw new Error(msg);
@@ -210,33 +268,33 @@ async function callGemini(apiKey: string, body: any): Promise<string> {
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!text) throw new Error('Порожня відповідь від моделі');
 
-      // Успішно! Запам'ятовуємо працюючу модель на сесію
-      activeModelCache = { version, model };
+      // Успішно! Оновлюємо активну працюючу модель
+      if (activeSession) {
+        activeSession.activeModel = model;
+      }
       return text;
     } catch (err: any) {
-      if (err.message && err.message.includes('Недійсний Gemini API ключ')) {
+      const errMsg = err.message || '';
+      if (
+        errMsg.includes('Generative Language API') ||
+        errMsg.includes('Недійсний Gemini API ключ') ||
+        errMsg.includes('Google Gemini API блокує')
+      ) {
         throw err;
       }
-      console.warn(`Gemini (${model} ${version}) помилка або ліміт, перемикаємось далі:`, err);
+      console.warn(`Gemini (${model}) помилка або ліміт, перемикаємось далі:`, err);
       lastError = err;
     }
   }
 
   // Якщо ВСІ моделі вичерпали ліміти
-  if (rateLimitedModels.length > 0 && rateLimitedModels.length >= candidates.length - 1) {
+  if (exhaustedCount >= orderedModels.length) {
     throw new Error(
-      `Усі доступні моделі Gemini (${rateLimitedModels.join(', ')}) тимчасово вичерпали хвилинний ліміт безкоштовної квоти Google. Зачекайте 20-30 секунд для скидання ліміту.`
+      `Усі доступні моделі Gemini (${orderedModels.join(', ')}) тимчасово вичерпали хвилинний ліміт безкоштовної квоти Google. Зачекайте 20–30 секунд для скидання ліміту.`
     );
   }
 
-  const rawMsg = lastError?.message || '';
-  if (rawMsg.includes('not found') || rawMsg.includes('404')) {
-    throw new Error(
-      'Модель Gemini не активована для вашого ключа. Створіть новий ключ на https://aistudio.google.com/app/apikey (там моделі увімкнені за замовчуванням).'
-    );
-  }
-
-  throw lastError || new Error('Не вдалося виконати запит до Gemini');
+  throw new Error(translateGeminiError(lastError?.message || 'Не вдалося виконати запит до Gemini'));
 }
 
 /**

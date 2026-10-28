@@ -408,14 +408,34 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         {/* Test Result Alert */}
         {testResult && (
           <div
-            className={`p-3 rounded-2xl text-xs flex items-center gap-2 ${
+            className={`p-3 rounded-2xl text-xs flex items-start gap-2.5 leading-relaxed animate-fade-in ${
               testResult.valid
                 ? 'bg-apple-green/15 border border-apple-green/30 text-apple-green'
-                : 'bg-red-500/15 border border-red-500/30 text-red-400'
+                : 'bg-red-500/15 border border-red-500/30 text-red-300'
             }`}
           >
-            {testResult.valid ? <Check size={16} /> : <AlertCircle size={16} />}
-            <span>{testResult.message}</span>
+            {testResult.valid ? (
+              <Check size={16} className="shrink-0 mt-0.5 text-apple-green" />
+            ) : (
+              <AlertCircle size={16} className="shrink-0 mt-0.5 text-red-400" />
+            )}
+            <div className="space-y-1.5 flex-1">
+              <div>{testResult.message}</div>
+              {testResult.message.includes('generativelanguage.googleapis.com') && (
+                <a
+                  href={
+                    testResult.message.match(/https:\/\/[^\s)]+/)?.[0] ||
+                    'https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com'
+                  }
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-blue-400 underline font-semibold hover:text-blue-300 pt-0.5"
+                >
+                  <span>Увімкнути Generative Language API в 1 клік</span>
+                  <ExternalLink size={12} />
+                </a>
+              )}
+            </div>
           </div>
         )}
       </div>
