@@ -10,6 +10,85 @@ import {
   isGoogleDriveConnected 
 } from '../services/googleDriveSync';
 
+/**
+ * Безпечне збереження в LocalStorage з захистом від QuotaExceededError.
+ * Якщо ліміт пам'яті вичерпано (через фото або історію), очищає важкі base64-зображення,
+ * гарантуючи, що всі записи про прийоми їжі, калорії та БЖВ залишаться збереженими на диску!
+ */
+export function safeSaveToLocalStorage(key: string, data: any): boolean {
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+    return true;
+  } catch (err: any) {
+    console.warn(`[SportMaster Storage] Помилка квоти пам'яті для ${key}. Запускаємо оптимізацію...`, err);
+    try {
+      if (typeof data === 'object' && data !== null) {
+        const cleaned = JSON.parse(JSON.stringify(data));
+        // Очищаємо важкі base64 дані з photoUrl, зберігаючи всі поживні речовини та назви
+        for (const date in cleaned) {
+          if (cleaned[date]?.meals && Array.isArray(cleaned[date].meals)) {
+            cleaned[date].meals = cleaned[date].meals.map((m: any) => ({
+              ...m,
+              photoUrl: undefined
+            }));
+          }
+        }
+        localStorage.setItem(key, JSON.stringify(cleaned));
+        console.info(`[SportMaster Storage] Дані ${key} успішно врятовано та збережено без важких фото.`);
+        return true;
+      }
+    } catch (cleanErr) {
+      console.error('[SportMaster Storage] Критична помилка збереження в LocalStorage:', cleanErr);
+    }
+    return false;
+  }
+}
+
+/**
+ * Глибоке об'єднання записів днів (Local + Cloud).
+ * Жоден прийом їжі ніколи не видаляється і не затирається фоновим завантаженням!
+ */
+export function mergeDaysLogs(
+  localDays: Record<string, DayLog> = {},
+  cloudDays: Record<string, DayLog> = {}
+): Record<string, DayLog> {
+  const merged: Record<string, DayLog> = { ...cloudDays, ...localDays };
+  const allDateKeys = new Set([...Object.keys(localDays || {}), ...Object.keys(cloudDays || {})]);
+
+  for (const dateKey of allDateKeys) {
+    const local = localDays?.[dateKey];
+    const cloud = cloudDays?.[dateKey];
+
+    if (local && cloud) {
+      // Об'єднуємо прийоми їжі за унікальним ID
+      const mealsMap = new Map<string, FoodEntry>();
+      // Спочатку хмарні
+      (cloud.meals || []).forEach((m) => {
+        if (m && m.id) mealsMap.set(m.id, m);
+      });
+      // Потім локальні (локальні мають вищий пріоритет)
+      (local.meals || []).forEach((m) => {
+        if (m && m.id) mealsMap.set(m.id, m);
+      });
+
+      merged[dateKey] = {
+        date: dateKey,
+        meals: Array.from(mealsMap.values()),
+        waterMl: Math.max(local.waterMl || 0, cloud.waterMl || 0),
+        steps: Math.max(local.steps || 0, cloud.steps || 0),
+        weight: local.weight || cloud.weight,
+        notes: local.notes || cloud.notes
+      };
+    } else if (local) {
+      merged[dateKey] = local;
+    } else if (cloud) {
+      merged[dateKey] = cloud;
+    }
+  }
+
+  return merged;
+}
+
 const getDefaultProfile = (user?: AuthUser | null): UserProfile => {
   const initialTargets = calculateNutritionTargets('male', 26, 75, 178, 'moderate', 'lose_weight');
   return {
@@ -50,6 +129,14 @@ export function useAppData(currentUser: AuthUser | null) {
     try {
       const saved = localStorage.getItem(daysKey);
       if (saved) return JSON.parse(saved);
+      // Якщо даних для акаунта ще немає, перевіримо гостьові записи
+      if (currentUser && currentUser.uid !== 'guest') {
+        const guestSaved = localStorage.getItem('sportmaster_u_guest_days');
+        if (guestSaved) {
+          const parsedGuest = JSON.parse(guestSaved);
+          if (Object.keys(parsedGuest).length > 0) return parsedGuest;
+        }
+      }
     } catch (e) {
       console.error('Failed to load days', e);
     }
@@ -91,11 +178,28 @@ export function useAppData(currentUser: AuthUser | null) {
         setProfile(def);
       }
 
-      const savedDays = localStorage.getItem(`sportmaster_u_${currentUser.uid}_days`);
+      const userDaysKey = `sportmaster_u_${currentUser.uid}_days`;
+      const savedDays = localStorage.getItem(userDaysKey);
       if (savedDays) {
         setDays(JSON.parse(savedDays));
       } else {
-        setDays({});
+        // Якщо для нового входу немає днів, мігруємо локальні гостьові дні
+        const guestDays = localStorage.getItem('sportmaster_u_guest_days');
+        if (guestDays) {
+          try {
+            const parsedGuest = JSON.parse(guestDays);
+            if (Object.keys(parsedGuest).length > 0) {
+              setDays(parsedGuest);
+              safeSaveToLocalStorage(userDaysKey, parsedGuest);
+            } else {
+              setDays({});
+            }
+          } catch {
+            setDays({});
+          }
+        } else {
+          setDays({});
+        }
       }
 
       const savedChat = localStorage.getItem(`sportmaster_u_${currentUser.uid}_chat`);
@@ -117,10 +221,11 @@ export function useAppData(currentUser: AuthUser | null) {
             }));
           }
           if (cloudData.days) {
-            setDays((prev) => ({
-              ...cloudData.days,
-              ...prev
-            }));
+            setDays((prev) => {
+              const merged = mergeDaysLogs(prev, cloudData.days);
+              safeSaveToLocalStorage(`sportmaster_u_${currentUser.uid}_days`, merged);
+              return merged;
+            });
           }
           if (cloudData.chat && Array.isArray(cloudData.chat) && cloudData.chat.length > 0) {
             setChatHistory(cloudData.chat);
@@ -135,7 +240,13 @@ export function useAppData(currentUser: AuthUser | null) {
     loadDataFromFirestore(currentUser.uid).then((cloudData) => {
       if (cloudData) {
         if (cloudData.profile) setProfile(cloudData.profile);
-        if (cloudData.days) setDays(cloudData.days);
+        if (cloudData.days) {
+          setDays((prev) => {
+            const merged = mergeDaysLogs(prev, cloudData.days);
+            safeSaveToLocalStorage(`sportmaster_u_${currentUser.uid}_days`, merged);
+            return merged;
+          });
+        }
         if (cloudData.chat) setChatHistory(cloudData.chat);
       }
     }).catch(() => {});
@@ -143,31 +254,19 @@ export function useAppData(currentUser: AuthUser | null) {
 
   // Persist Profile
   useEffect(() => {
-    try {
-      localStorage.setItem(profileKey, JSON.stringify(profile));
-    } catch (e) {
-      console.error('Failed to save profile', e);
-    }
+    safeSaveToLocalStorage(profileKey, profile);
     triggerCloudSync();
   }, [profile, profileKey]);
 
-  // Persist Days
+  // Persist Days to local storage and sync to cloud
   useEffect(() => {
-    try {
-      localStorage.setItem(daysKey, JSON.stringify(days));
-    } catch (e) {
-      console.error('Failed to save days', e);
-    }
+    safeSaveToLocalStorage(daysKey, days);
     triggerCloudSync();
   }, [days, daysKey]);
 
   // Persist Chat
   useEffect(() => {
-    try {
-      localStorage.setItem(chatKey, JSON.stringify(chatHistory));
-    } catch (e) {
-      console.error('Failed to save chat', e);
-    }
+    safeSaveToLocalStorage(chatKey, chatHistory);
   }, [chatHistory, chatKey]);
 
   // Debounced cloud sync
@@ -253,13 +352,16 @@ export function useAppData(currentUser: AuthUser | null) {
         steps: 0,
         weight: profile.weight
       };
-      return {
+      const updated = {
         ...prev,
         [dateKey]: {
           ...existing,
           meals: [...existing.meals, newEntry]
         }
       };
+      // Синхронно фіксуємо в LocalStorage в ту саму мілісекунду!
+      safeSaveToLocalStorage(daysKey, updated);
+      return updated;
     });
 
     return newEntry;
@@ -269,13 +371,15 @@ export function useAppData(currentUser: AuthUser | null) {
     setDays((prev) => {
       const existing = prev[dateKey];
       if (!existing) return prev;
-      return {
+      const updated = {
         ...prev,
         [dateKey]: {
           ...existing,
           meals: existing.meals.filter((m) => m.id !== entryId)
         }
       };
+      safeSaveToLocalStorage(daysKey, updated);
+      return updated;
     });
   };
 
@@ -288,13 +392,15 @@ export function useAppData(currentUser: AuthUser | null) {
         steps: 0,
         weight: profile.weight
       };
-      return {
+      const updated = {
         ...prev,
         [dateKey]: {
           ...existing,
           waterMl: Math.max(0, (existing.waterMl || 0) + deltaMl)
         }
       };
+      safeSaveToLocalStorage(daysKey, updated);
+      return updated;
     });
   };
 
@@ -307,13 +413,15 @@ export function useAppData(currentUser: AuthUser | null) {
         steps: 0,
         weight: profile.weight
       };
-      return {
+      const updated = {
         ...prev,
         [dateKey]: {
           ...existing,
           steps: Math.max(0, steps)
         }
       };
+      safeSaveToLocalStorage(daysKey, updated);
+      return updated;
     });
   };
 
@@ -326,13 +434,15 @@ export function useAppData(currentUser: AuthUser | null) {
         steps: 0,
         weight: profile.weight
       };
-      return {
+      const updated = {
         ...prev,
         [dateKey]: {
           ...existing,
           steps: Math.max(0, (existing.steps || 0) + deltaSteps)
         }
       };
+      safeSaveToLocalStorage(daysKey, updated);
+      return updated;
     });
   };
 

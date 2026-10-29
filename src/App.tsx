@@ -41,6 +41,15 @@ export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard');
   const [isAddMealOpen, setIsAddMealOpen] = useState(false);
   const [selectedMealType, setSelectedMealType] = useState<MealType>('breakfast');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const handleSaveMeal = (entry: any) => {
+    addFoodEntry(currentDate, entry);
+    setToastMessage(`✓ Збережено: ${entry.name} (${entry.calories} ккал)`);
+    setTimeout(() => {
+      setToastMessage(null);
+    }, 3000);
+  };
 
   const handleAuthSuccess = (user: AuthUser) => {
     setCurrentUser(user);
@@ -129,13 +138,21 @@ export const App: React.FC = () => {
         unreadChatBadge={false}
       />
 
+      {/* Top Floating Notification (iOS Dynamic Pill) */}
+      {toastMessage && (
+        <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 pointer-events-none px-4 py-2.5 rounded-full bg-[#1C1C1E]/95 border border-apple-green/40 shadow-2xl backdrop-blur-xl flex items-center gap-2.5 text-xs font-semibold text-white animate-in fade-in slide-in-from-top-3 duration-200">
+          <span className="w-2 h-2 rounded-full bg-apple-green animate-pulse" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
+
       {/* Add Meal Modal (3 methods: manual, AI text, AI photo) */}
       <AddMealModal
         isOpen={isAddMealOpen}
         onClose={() => setIsAddMealOpen(false)}
         defaultMealType={selectedMealType}
         geminiApiKey={profile.geminiApiKey}
-        onSave={(entry) => addFoodEntry(currentDate, entry)}
+        onSave={handleSaveMeal}
         onOpenSettings={() => {
           setIsAddMealOpen(false);
           setCurrentTab('profile');
